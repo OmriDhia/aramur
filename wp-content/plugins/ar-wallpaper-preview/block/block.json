@@ -1,0 +1,45 @@
+{
+	"name": "ar-wallpaper-preview/ar-preview-block",
+	"title": "AR Wallpaper Preview",
+	"description": "Adds a button and viewport to preview a wallpaper on a real wall using AR.",
+	"category": "widgets",
+	"icon": "camera",
+	"keywords": ["ar", "wallpaper", "preview", "webxr"],
+	"attributes": {
+		"image": {
+			"type": "string",
+			"default": ""
+		},
+		"width_cm": {
+			"type": "number"
+		},
+		"height_cm": {
+			"type": "number"
+		},
+		"tiling": {
+			"type": "boolean"
+		},
+		"repeat_x": {
+			"type": "number",
+			"default": 1
+		},
+		"repeat_y": {
+			"type": "number",
+			"default": 1
+		},
+		"brightness": {
+			"type": "number",
+			"default": 1.0
+		},
+		"engine": {
+			"type": "string",
+			"default": "auto"
+		}
+	},
+	"supports": {
+		"html": false
+	},
+	"textdomain": "ar-wallpaper-preview",
+	"editorScript": "file:./index.js",
+	"style": "file:../assets/css/style.css"
+}

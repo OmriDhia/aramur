@@ -1,0 +1,73 @@
+/**
+ * AR Wallpaper Preview Plugin Styles
+ */
+
+.arwp-container {
+    position: relative;
+    width: 100%;
+    height: 500px; /* Default height, should be adjusted by theme/user */
+    overflow: hidden;
+    background-color: #000;
+    color: #fff;
+    font-family: sans-serif;
+}
+
+.arwp-container canvas,
+.arwp-container video,
+.arwp-container a-scene {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 1;
+}
+
+/* AR Button for WebXR */
+#arwp-ar-button {
+    position: absolute;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 10;
+    padding: 10px 20px;
+    background-color: #4CAF50;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 1.2em;
+}
+
+/* Guidance Overlay */
+.arwp-guidance {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 5;
+    background-color: rgba(0, 0, 0, 0.7);
+    padding: 15px;
+    border-radius: 5px;
+    text-align: center;
+    max-width: 80%;
+}
+
+/* UI Controls */
+.arwp-ui-controls {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    z-index: 10;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+}
+
+.arwp-ui-controls button {
+    padding: 5px 10px;
+    background-color: rgba(255, 255, 255, 0.8);
+    border: 1px solid #ccc;
+    border-radius: 3px;
+    cursor: pointer;
+}

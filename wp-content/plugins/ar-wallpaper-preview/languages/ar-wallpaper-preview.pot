@@ -1,0 +1,199 @@
+# Copyright (C) 2025 Manus AI
+# This file is distributed under the same license as the AR Wallpaper Preview plugin.
+msgid ""
+msgstr ""
+"Project-Id-Version: AR Wallpaper Preview 1.0.0\n"
+"Report-Msgid-Bugs-To: https://manus.im\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: LANGUAGE <LL@li.org>\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms-Translation: nplurals=2; plural=(n != 1);\n"
+"X-Generator: Poedit 3.4.1\n"
+
+#: ar-wallpaper-preview.php:11
+msgid "AR Wallpaper Preview"
+msgstr ""
+
+#: ar-wallpaper-preview.php:12
+msgid "Lets shoppers preview wallpapers on their real walls using their phone camera with WebXR, AR.js, and canvas fallback."
+msgstr ""
+
+#: includes/Admin.php:21
+msgid "AR Wallpaper Preview Settings"
+msgstr ""
+
+#: includes/Admin.php:22
+msgid "AR Wallpaper Preview"
+msgstr ""
+
+#: includes/Admin.php:51
+msgid "Save Settings"
+msgstr ""
+
+#: includes/Admin.php:92
+msgid "General AR Settings"
+msgstr ""
+
+#: includes/Admin.php:101
+msgid "Configure the default settings for the AR Wallpaper Preview plugin."
+msgstr ""
+
+#: includes/Admin.php:111
+msgid "Default Wallpaper Width (cm)"
+msgstr ""
+
+#: includes/Admin.php:113
+msgid "Default width of the wallpaper in centimeters."
+msgstr ""
+
+#: includes/Admin.php:123
+msgid "Default Wallpaper Height (cm)"
+msgstr ""
+
+#: includes/Admin.php:125
+msgid "Default height of the wallpaper in centimeters."
+msgstr ""
+
+#: includes/Admin.php:135
+msgid "Enable Tiling by Default"
+msgstr ""
+
+#: includes/Admin.php:137
+msgid "Check to enable wallpaper tiling/repeat by default."
+msgstr ""
+
+#: includes/Admin.php:147
+msgid "AR Engine Priority"
+msgstr ""
+
+#: includes/Admin.php:149
+msgid "Comma-separated list of AR engines in order of preference (e.g., webxr,arjs,canvas_fallback)."
+msgstr ""
+
+#: includes/Admin.php:159
+msgid "Default AR Marker URL"
+msgstr ""
+
+#: includes/Admin.php:161
+msgid "URL to a default marker image for AR.js fallback mode."
+msgstr ""
+
+#: includes/Admin.php:171
+msgid "Max Texture Resolution (px)"
+msgstr ""
+
+#: includes/Admin.php:173
+msgid "Maximum texture size (e.g., 2048) to prevent memory issues on mobile devices."
+msgstr ""
+
+#: includes/Shortcode.php:33
+msgid "Error: The \"image\" attribute is required for the AR Wallpaper Preview shortcode."
+msgstr ""
+
+#: includes/Shortcode.php:60
+msgid "Loading AR experience..."
+msgstr ""
+
+#: includes/Shortcode.php:64
+msgid "Your device does not support the required AR features."
+msgstr ""
+
+#: includes/Shortcode.php:65
+msgid "Point your camera at a wall and slowly move your phone to detect a surface."
+msgstr ""
+
+#: includes/Shortcode.php:66
+msgid "Move"
+msgstr ""
+
+#: includes/Shortcode.php:67
+msgid "Rotate"
+msgstr ""
+
+#: includes/Shortcode.php:68
+msgid "Scale"
+msgstr ""
+
+#: includes/Shortcode.php:69
+msgid "Tile"
+msgstr ""
+
+#: includes/Shortcode.php:70
+msgid "Light"
+msgstr ""
+
+#: includes/Shortcode.php:71
+msgid "Reset"
+msgstr ""
+
+#: includes/Shortcode.php:72
+msgid "Snapshot"
+msgstr ""
+
+#: includes/Shortcode.php:73
+msgid "Place"
+msgstr ""
+
+#: block/block.json
+msgctxt "block title"
+msgid "AR Wallpaper Preview"
+msgstr ""
+
+#: block/block.json
+msgctxt "block description"
+msgid "Adds a button and viewport to preview a wallpaper on a real wall using AR."
+msgstr ""
+
+#: block/edit.js:20
+msgid "AR Wallpaper Settings"
+msgstr ""
+
+#: block/edit.js:27
+msgid "Change Wallpaper Image"
+msgstr ""
+
+#: block/edit.js:27
+msgid "Select Wallpaper Image"
+msgstr ""
+
+#: block/edit.js:31
+msgid "Selected Image:"
+msgstr ""
+
+#: block/edit.js:36
+msgid "Wallpaper Width (cm)"
+msgstr ""
+
+#: block/edit.js:42
+msgid "Wallpaper Height (cm)"
+msgstr ""
+
+#: block/edit.js:48
+msgid "Enable Tiling"
+msgstr ""
+
+#: block/edit.js:54
+msgid "Repeat X"
+msgstr ""
+
+#: block/edit.js:63
+msgid "Repeat Y"
+msgstr ""
+
+#: block/edit.js:75
+msgid "Brightness"
+msgstr ""
+
+#: block/edit.js:83
+msgid "AR Engine Override (auto, webxr, arjs, canvas)"
+msgstr ""
+
+#: block/edit.js:89
+msgid "Image set. AR preview will appear on the frontend."
+msgstr ""
+
+#: block/edit.js:89
+msgid "Please select a wallpaper image."
+msgstr ""
