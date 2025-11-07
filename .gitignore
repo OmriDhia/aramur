@@ -1,0 +1,21 @@
+# Ignore everything by default
+*
+
+# But keep Git + docs
+!.gitignore
+!.gitattributes
+!README.md
+
+# Keep wp-content
+!wp-content/
+wp-content/*
+
+# Keep only plugins inside wp-content
+!wp-content/plugins/
+wp-content/plugins/*
+
+# OPTIONAL: ignore third-party plugins you don’t want in the repo
+wp-content/plugins/akismet/
+wp-content/plugins/woocommerce/
+# Keep your custom plugins
+!wp-content/plugins/your-custom-plugin/
