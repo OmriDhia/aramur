@@ -19,6 +19,8 @@ class ARWallpaperPreview {
         this.rotationLabel = this.modal.querySelector('.ar-wallpaper-modal__label--rotation');
         this.snapshotButton = this.modal.querySelector('.ar-wallpaper-modal__snapshot');
         this.snapshotLink = this.modal.querySelector('.ar-wallpaper-modal__snapshot-link');
+        this.fitButton = this.modal.querySelector('.ar-wallpaper-modal__fit-to-wall');
+        this.resetButton = this.modal.querySelector('.ar-wallpaper-modal__reset');
         this.webxrControl = this.modal.querySelector('.ar-wallpaper-modal__control--webxr');
         this.webxrButton = this.modal.querySelector('.ar-wallpaper-modal__webxr-button');
         this.webxrContainer = this.modal.querySelector('.ar-wallpaper-modal__webxr-container');
@@ -30,8 +32,10 @@ class ARWallpaperPreview {
         this.isDragging = false;
         this.dragPointerId = null;
         this.offset = { x: 0, y: 0 };
-        this.scale = (window.arWallpaperPreview && arWallpaperPreview.settings.defaultScale) || 1;
-        this.rotation = (window.arWallpaperPreview && arWallpaperPreview.settings.defaultRotation) || 0;
+        this.defaultScale = (window.arWallpaperPreview && arWallpaperPreview.settings.defaultScale) || 1;
+        this.defaultRotation = (window.arWallpaperPreview && arWallpaperPreview.settings.defaultRotation) || 0;
+        this.scale = this.defaultScale;
+        this.rotation = this.defaultRotation;
         this.videoAspect = 1;
         this.webxrSupported = false;
         this.webxrSession = null;
@@ -47,6 +51,14 @@ class ARWallpaperPreview {
         this.cameraPermissionStatus = null;
         this.cameraPermissionHandler = null;
         this.activeMessageKey = '';
+        this.latestDetections = [];
+        this.detectionModel = null;
+        this.detectionModelPromise = null;
+        this.detectionTimer = null;
+        this.detectionActive = false;
+        this.analysisCanvas = document.createElement('canvas');
+        this.analysisCtx = this.analysisCanvas.getContext('2d');
+        this.maskDataUrl = '';
 
         this.configureVideoElement();
         this.bindEvents();
@@ -97,6 +109,14 @@ class ARWallpaperPreview {
             this.snapshotButton.textContent = strings.takeSnapshot;
         }
 
+        if (this.fitButton) {
+            this.fitButton.textContent = strings.fitToWall;
+        }
+
+        if (this.resetButton) {
+            this.resetButton.textContent = strings.resetPlacement;
+        }
+
         if (this.webxrButton) {
             this.webxrButton.textContent = strings.startWebXR;
         }
@@ -135,6 +155,14 @@ class ARWallpaperPreview {
 
         if (this.snapshotButton) {
             this.snapshotButton.addEventListener('click', () => this.captureSnapshot());
+        }
+
+        if (this.fitButton) {
+            this.fitButton.addEventListener('click', () => this.fitWallpaperToWall());
+        }
+
+        if (this.resetButton) {
+            this.resetButton.addEventListener('click', () => this.resetPlacement(true));
         }
 
         if (this.webxrButton) {
@@ -191,8 +219,8 @@ class ARWallpaperPreview {
         }
 
         this.imageUrl = imageUrl;
-        this.scale = (window.arWallpaperPreview && arWallpaperPreview.settings.defaultScale) || 1;
-        this.rotation = (window.arWallpaperPreview && arWallpaperPreview.settings.defaultRotation) || 0;
+        this.scale = this.defaultScale;
+        this.rotation = this.defaultRotation;
         this.offset = { x: 0, y: 0 };
 
         this.modal.classList.add('is-visible');
@@ -211,6 +239,7 @@ class ARWallpaperPreview {
             .then(() => {
                 this.applyWallpaperBackground();
                 this.updateWallpaperTransform();
+                this.resetMask();
                 return this.checkWebXRSupport();
             })
             .then((webxrStatus) => {
@@ -471,6 +500,7 @@ class ARWallpaperPreview {
                     this.canvas.width = this.video.videoWidth;
                     this.canvas.height = this.video.videoHeight;
                     this.videoAspect = this.video.videoWidth / Math.max(this.video.videoHeight, 1);
+                    this.startObjectDetection();
                 }, { once: true });
 
                 return null;
@@ -768,6 +798,7 @@ class ARWallpaperPreview {
         }
 
         this.stream = null;
+        this.stopObjectDetection();
 
         return Promise.resolve();
     }
@@ -780,12 +811,14 @@ class ARWallpaperPreview {
         return this.stopFallbackCamera()
             .then(() => this.endWebXRSession())
             .then(() => {
+                this.resetMask();
                 this.resetSnapshotLink();
                 this.isDragging = false;
                 this.dragPointerId = null;
                 if (this.wallpaper) {
                     this.wallpaper.classList.remove('is-dragging');
                 }
+                this.resetPlacement(false);
             });
     }
 
@@ -902,6 +935,273 @@ class ARWallpaperPreview {
         }
 
         return Promise.resolve();
+    }
+
+    resetPlacement(showMessage = false) {
+        this.scale = this.defaultScale;
+        this.rotation = this.defaultRotation;
+        this.offset = { x: 0, y: 0 };
+
+        if (this.scaleControl) {
+            this.scaleControl.value = this.scale;
+        }
+
+        if (this.rotationControl) {
+            this.rotationControl.value = this.rotation;
+        }
+
+        this.updateWallpaperTransform();
+        this.resetMask();
+
+        if (showMessage) {
+            this.showMessage(this.getString('resettingPlacement'), false, 'reset');
+        }
+    }
+
+    resetMask() {
+        if (!this.wallpaper) {
+            return;
+        }
+
+        this.wallpaper.style.removeProperty('mask-image');
+        this.wallpaper.style.removeProperty('-webkit-mask-image');
+        this.wallpaper.style.removeProperty('--ar-wallpaper-mask');
+        this.maskDataUrl = '';
+        this.latestDetections = [];
+    }
+
+    fitWallpaperToWall(auto = false) {
+        if (!this.videoContainer) {
+            return;
+        }
+
+        const occluders = this.latestDetections || [];
+        const containerWidth = this.videoContainer.clientWidth || 1;
+        const containerHeight = this.videoContainer.clientHeight || 1;
+
+        let totalOccluderWidth = 0;
+        let occluderBottom = 0;
+        let occluderCenter = 0;
+
+        occluders.forEach((box) => {
+            totalOccluderWidth += box.width;
+            occluderBottom = Math.max(occluderBottom, box.y + box.height);
+            occluderCenter += box.x + box.width / 2;
+        });
+
+        const occluderCount = occluders.length || 1;
+        const averageCenter = occluderCenter / occluderCount;
+        const occluderWidth = totalOccluderWidth / occluderCount;
+        const baseWidth = containerWidth * 0.65;
+        const safeWidth = Math.max(containerWidth - (occluderWidth || 0), containerWidth * 0.55);
+        const targetScale = Math.min(3, Math.max(0.55, safeWidth / Math.max(baseWidth, 1)));
+
+        const verticalSpace = containerHeight - occluderBottom;
+        const targetOffsetY = (verticalSpace > containerHeight * 0.2)
+            ? -((containerHeight / 2) - (verticalSpace / 2)) * 0.5
+            : -containerHeight * 0.1;
+
+        const centerBias = averageCenter ? (averageCenter - containerWidth / 2) : 0;
+        const targetOffsetX = -centerBias * 0.35;
+
+        this.scale = targetScale;
+        this.offset = {
+            x: targetOffsetX,
+            y: targetOffsetY,
+        };
+
+        if (this.scaleControl) {
+            this.scaleControl.value = this.scale;
+        }
+
+        this.updateWallpaperTransform();
+
+        if (!auto) {
+            this.showMessage(this.getString('fittingWall'), false, 'fit');
+        }
+    }
+
+    ensureDetectionModel() {
+        if (this.detectionModel) {
+            return Promise.resolve(this.detectionModel);
+        }
+
+        if (this.detectionModelPromise) {
+            return this.detectionModelPromise;
+        }
+
+        const loadScript = (src) => new Promise((resolve, reject) => {
+            if ((src.includes('tf.min.js') && window.tf) || (src.includes('coco-ssd') && window.cocoSsd)) {
+                resolve();
+                return;
+            }
+
+            const existing = Array.from(document.querySelectorAll('script')).find((script) => script.src === src);
+            if (existing) {
+                if (existing.dataset.loaded === 'true' || existing.readyState === 'complete') {
+                    resolve();
+                } else {
+                    existing.addEventListener('load', () => resolve());
+                    existing.addEventListener('error', (event) => reject(event.error || new Error('Script load failed')));
+                }
+                return;
+            }
+
+            const script = document.createElement('script');
+            script.src = src;
+            script.async = true;
+            script.defer = true;
+            script.addEventListener('load', () => {
+                script.dataset.loaded = 'true';
+                resolve();
+            });
+            script.addEventListener('error', (event) => reject(event.error || new Error(`Failed to load script: ${src}`)));
+            document.head.appendChild(script);
+        });
+
+        this.detectionModelPromise = loadScript('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.16.0/dist/tf.min.js')
+            .then(() => loadScript('https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.2/dist/coco-ssd.min.js'))
+            .then(() => {
+                if (!window.cocoSsd || !window.cocoSsd.load) {
+                    throw new Error('coco-ssd loader not available');
+                }
+                return window.cocoSsd.load();
+            })
+            .then((model) => {
+                this.detectionModel = model;
+                return model;
+            })
+            .catch((error) => {
+                console.warn('Object detection model failed to load', error);
+                this.detectionModelPromise = null;
+                return null;
+            });
+
+        return this.detectionModelPromise;
+    }
+
+    startObjectDetection() {
+        if (this.detectionActive || !this.video) {
+            return;
+        }
+
+        this.detectionActive = true;
+        this.showMessage(this.getString('occlusionCalibrating'), false, 'occlusion');
+        this.runDetectionLoop();
+    }
+
+    stopObjectDetection() {
+        this.detectionActive = false;
+        if (this.detectionTimer) {
+            window.clearTimeout(this.detectionTimer);
+            this.detectionTimer = null;
+        }
+        if (this.activeMessageKey === 'occlusion') {
+            this.hideMessage();
+        }
+    }
+
+    runDetectionLoop() {
+        if (!this.detectionActive) {
+            return;
+        }
+
+        if (!this.video || this.video.readyState < 2) {
+            this.detectionTimer = window.setTimeout(() => this.runDetectionLoop(), 800);
+            return;
+        }
+
+        this.ensureDetectionModel()
+            .then((model) => {
+                if (!model || !this.detectionActive) {
+                    return null;
+                }
+
+                return model.detect(this.video).then((predictions) => {
+                    if (!Array.isArray(predictions)) {
+                        return;
+                    }
+
+                    this.latestDetections = this.normalizeDetections(predictions);
+                    this.applyOcclusionMask();
+                    if (this.activeMessageKey === 'occlusion') {
+                        this.hideMessage();
+                    }
+                    if (!this.latestDetections.length) {
+                        this.resetMask();
+                    } else {
+                        this.fitWallpaperToWall(true);
+                    }
+                });
+            })
+            .finally(() => {
+                if (this.detectionActive) {
+                    this.detectionTimer = window.setTimeout(() => this.runDetectionLoop(), 1000);
+                }
+            });
+    }
+
+    normalizeDetections(predictions) {
+        if (!this.videoContainer) {
+            return [];
+        }
+
+        const occlusionLabels = ['person', 'chair', 'sofa', 'bed', 'tv', 'dining table', 'potted plant', 'cat', 'dog'];
+        const containerWidth = this.videoContainer.clientWidth || 1;
+        const containerHeight = this.videoContainer.clientHeight || 1;
+        const videoWidth = this.video && this.video.videoWidth ? this.video.videoWidth : containerWidth;
+        const videoHeight = this.video && this.video.videoHeight ? this.video.videoHeight : containerHeight;
+        const scaleX = containerWidth / Math.max(videoWidth, 1);
+        const scaleY = containerHeight / Math.max(videoHeight, 1);
+
+        return predictions
+            .filter((prediction) => occlusionLabels.includes(prediction.class) && prediction.score >= 0.45)
+            .map((prediction) => {
+                const [x, y, width, height] = prediction.bbox;
+                return {
+                    x: x * scaleX,
+                    y: y * scaleY,
+                    width: width * scaleX,
+                    height: height * scaleY,
+                };
+            });
+    }
+
+    applyOcclusionMask() {
+        if (!this.wallpaper || !this.analysisCtx || !this.latestDetections.length) {
+            return;
+        }
+
+        const videoWidth = this.video && this.video.videoWidth ? this.video.videoWidth : this.videoContainer.clientWidth || 640;
+        const videoHeight = this.video && this.video.videoHeight ? this.video.videoHeight : this.videoContainer.clientHeight || 480;
+
+        if (!videoWidth || !videoHeight) {
+            return;
+        }
+
+        this.analysisCanvas.width = videoWidth;
+        this.analysisCanvas.height = videoHeight;
+
+        const ctx = this.analysisCtx;
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, videoWidth, videoHeight);
+        ctx.fillStyle = '#000000';
+
+        const scaleX = videoWidth / (this.videoContainer.clientWidth || videoWidth);
+        const scaleY = videoHeight / (this.videoContainer.clientHeight || videoHeight);
+
+        this.latestDetections.forEach((box) => {
+            ctx.fillRect(box.x * scaleX, box.y * scaleY, box.width * scaleX, box.height * scaleY);
+        });
+
+        const dataUrl = this.analysisCanvas.toDataURL('image/png');
+
+        if (dataUrl !== this.maskDataUrl) {
+            this.wallpaper.style.setProperty('--ar-wallpaper-mask', `url(${dataUrl})`);
+            this.wallpaper.style.maskImage = `url(${dataUrl})`;
+            this.wallpaper.style.webkitMaskImage = `url(${dataUrl})`;
+            this.maskDataUrl = dataUrl;
+        }
     }
 }
 
