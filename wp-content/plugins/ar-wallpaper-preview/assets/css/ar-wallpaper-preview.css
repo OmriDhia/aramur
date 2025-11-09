@@ -104,6 +104,18 @@
     object-fit: cover;
 }
 
+.ar-wallpaper-modal__video-container--static {
+    background: radial-gradient(circle at 20% 20%, rgba(148, 163, 184, 0.12), transparent 55%),
+        radial-gradient(circle at 80% 30%, rgba(59, 130, 246, 0.18), transparent 60%),
+        #0f172a;
+}
+
+.ar-wallpaper-modal__video-container--static .ar-wallpaper-modal__video {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+}
+
 .ar-wallpaper-modal__canvas {
     position: absolute;
     inset: 0;
