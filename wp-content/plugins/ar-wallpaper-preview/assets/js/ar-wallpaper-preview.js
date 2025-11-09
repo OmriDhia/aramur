@@ -44,10 +44,36 @@ class ARWallpaperPreview {
         this.webxrHitTestRequested = false;
         this.webxrLocalSpace = null;
         this.webxrViewerSpace = null;
+        this.cameraPermissionStatus = null;
+        this.cameraPermissionHandler = null;
+        this.activeMessageKey = '';
 
+        this.configureVideoElement();
         this.bindEvents();
         this.prepareText();
         this.observeButtons();
+    }
+
+    getString(key, fallback = '') {
+        const defaults = {
+            webxrTitle: 'WebXR Preview',
+            webxrNotSupported: 'Your device does not support WebXR. Showing fallback preview.',
+            secureContext: 'AR preview requires a secure (HTTPS) connection. Reload the page over HTTPS to enable camera and WebXR features.',
+            cameraDenied: 'Camera access was denied. Unable to show live preview.',
+            cameraPermission: 'Please allow camera access to enable the live preview.',
+            cameraBlocked: 'Camera access is blocked. Update your browser permissions to use the live preview.',
+            cameraUnavailable: 'No compatible camera was found. Showing static preview.',
+            fallbackPreview: 'Live camera preview is unavailable. Showing static background instead.',
+            livePreviewReady: 'Camera preview ready.',
+        };
+
+        const defaultValue = Object.prototype.hasOwnProperty.call(defaults, key) ? defaults[key] : fallback;
+
+        if (!window.arWallpaperPreview || !arWallpaperPreview.strings) {
+            return defaultValue;
+        }
+
+        return arWallpaperPreview.strings[key] || defaultValue;
     }
 
     prepareText() {
@@ -143,13 +169,26 @@ class ARWallpaperPreview {
         });
     }
 
+    configureVideoElement() {
+        if (!this.video) {
+            return;
+        }
+
+        this.video.setAttribute('playsinline', '');
+        this.video.setAttribute('muted', '');
+        this.video.setAttribute('autoplay', '');
+        this.video.playsInline = true;
+        this.video.muted = true;
+        this.video.autoplay = true;
+    }
+
     isOpen() {
         return this.modal.classList.contains('is-visible');
     }
 
-    async open(imageUrl) {
+    open(imageUrl) {
         if (!imageUrl) {
-            return;
+            return Promise.resolve();
         }
 
         this.imageUrl = imageUrl;
@@ -169,34 +208,51 @@ class ARWallpaperPreview {
             this.rotationControl.value = this.rotation;
         }
 
-        await this.loadWallpaperImage(imageUrl);
-        this.applyWallpaperBackground();
-        this.updateWallpaperTransform();
+        return this.loadWallpaperImage(imageUrl)
+            .then(() => {
+                this.applyWallpaperBackground();
+                this.updateWallpaperTransform();
+                return this.checkWebXRSupport();
+            })
+            .then((webxrStatus) => {
+                this.webxrSupported = webxrStatus.supported;
+                this.toggleWebXRControls(this.webxrSupported);
 
-        this.webxrSupported = await this.checkWebXRSupport();
-        this.toggleWebXRControls(this.webxrSupported);
+                if (this.webxrSupported) {
+                    this.showMessage(this.getString('webxrTitle'), true, 'webxr-ready');
+                } else if (webxrStatus.message) {
+                    this.showMessage(webxrStatus.message, true, 'webxr-status');
+                } else {
+                    this.showMessage(this.getString('webxrNotSupported'), false, 'webxr-unsupported');
+                }
 
-        if (this.webxrSupported) {
-            this.showMessage(arWallpaperPreview.strings.webxrTitle, true);
-        } else {
-            this.showMessage(arWallpaperPreview.strings.webxrNotSupported);
-        }
-
-        await this.startFallbackCamera();
+                return this.startFallbackCamera();
+            })
+            .catch((error) => {
+                console.error('Failed to open preview', error);
+                return this.useStaticFallback(this.getString('fallbackPreview'));
+            });
     }
 
-    async loadWallpaperImage(url) {
+    loadWallpaperImage(url) {
         if (!url) {
-            return;
+            return Promise.resolve();
         }
 
-        this.image = await new Promise((resolve, reject) => {
+        return new Promise((resolve, reject) => {
             const img = new Image();
             img.crossOrigin = 'anonymous';
             img.onload = () => resolve(img);
-            img.onerror = reject;
+            img.onerror = () => reject(new Error('Failed to load wallpaper image'));
             img.src = url;
-        }).catch(() => null);
+        })
+            .then((img) => {
+                this.image = img;
+            })
+            .catch((error) => {
+                console.error('Unable to load wallpaper image', error);
+                this.image = null;
+            });
     }
 
     applyWallpaperBackground() {
@@ -256,36 +312,193 @@ class ARWallpaperPreview {
         this.wallpaper.classList.remove('is-dragging');
     }
 
-    async startFallbackCamera() {
+    startFallbackCamera() {
         if (!this.video || this.stream) {
-            return;
+            return Promise.resolve();
         }
 
         this.showPermission(false);
 
+        if (this.videoContainer) {
+            this.videoContainer.classList.remove('ar-wallpaper-modal__video-container--static');
+        }
+
+        if (this.activeMessageKey === 'fallback') {
+            this.hideMessage();
+        }
+
+        if (!window.isSecureContext) {
+            return this.useStaticFallback(this.getString('secureContext'));
+        }
+
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-            this.showPermission(true, arWallpaperPreview.strings.cameraDenied);
+            return this.useStaticFallback(this.getString('fallbackPreview'));
+        }
+
+        const context = {
+            permissionState: 'unknown',
+            hasShownPermissionMessage: false,
+        };
+
+        const handlePermissionChange = (target) => {
+            if (!target) {
+                return;
+            }
+
+            if (target.state === 'granted') {
+                this.showPermission(false);
+                if (!this.stream) {
+                    this.startFallbackCamera();
+                }
+            } else if (target.state === 'denied') {
+                this.useStaticFallback(this.getString('cameraBlocked'));
+            }
+        };
+
+        const permissionPromise = (navigator.permissions && navigator.permissions.query)
+            ? navigator.permissions.query({ name: 'camera' })
+                .then((status) => {
+                    this.cameraPermissionStatus = status;
+                    context.permissionState = status.state;
+
+                    if (!this.cameraPermissionHandler) {
+                        this.cameraPermissionHandler = (event) => {
+                            const target = event && event.target ? event.target : this.cameraPermissionStatus || status;
+                            handlePermissionChange(target);
+                        };
+                    }
+
+                    if (typeof status.removeEventListener === 'function') {
+                        status.removeEventListener('change', this.cameraPermissionHandler);
+                    }
+
+                    if (typeof status.addEventListener === 'function') {
+                        status.addEventListener('change', this.cameraPermissionHandler);
+                    } else if ('onchange' in status && typeof status.onchange !== 'function') {
+                        status.onchange = this.cameraPermissionHandler;
+                    }
+
+                    if (status.state === 'denied') {
+                        context.hasShownPermissionMessage = true;
+                        return Promise.reject(new Error('camera-denied'));
+                    }
+
+                    if (status.state === 'granted') {
+                        this.showPermission(false);
+                        context.hasShownPermissionMessage = true;
+                    }
+
+                    if (status.state === 'prompt') {
+                        this.showPermission(true, this.getString('cameraPermission'));
+                        context.hasShownPermissionMessage = true;
+                    }
+
+                    return status;
+                })
+                .catch((error) => {
+                    if (error && error.message === 'camera-denied') {
+                        throw error;
+                    }
+                    context.permissionState = 'prompt';
+                    return null;
+                })
+            : Promise.resolve(null);
+
+        const attemptStream = () => {
+            const constraintAttempts = [
+                { video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false },
+                { video: { facingMode: 'environment' }, audio: false },
+                { video: { facingMode: { ideal: 'user' } }, audio: false },
+                { video: true, audio: false },
+            ];
+
+            let attemptIndex = 0;
+            let lastError = null;
+
+            const tryNext = () => {
+                if (attemptIndex >= constraintAttempts.length) {
+                    return Promise.reject(lastError || new Error('camera-unavailable'));
+                }
+
+                const constraints = constraintAttempts[attemptIndex];
+                attemptIndex += 1;
+
+                return navigator.mediaDevices.getUserMedia(constraints)
+                    .then((stream) => {
+                        this.stream = stream;
+                        return stream;
+                    })
+                    .catch((error) => {
+                        lastError = error;
+                        return tryNext();
+                    });
+            };
+
+            return tryNext();
+        };
+
+        return permissionPromise
+            .then(() => {
+                if (!context.hasShownPermissionMessage && context.permissionState !== 'granted') {
+                    this.showPermission(true, this.getString('cameraPermission'));
+                    context.hasShownPermissionMessage = true;
+                }
+
+                return attemptStream();
+            })
+            .then(() => {
+                this.video.srcObject = this.stream;
+
+                const playPromise = this.video.play();
+                if (playPromise && typeof playPromise.catch === 'function') {
+                    playPromise.catch(() => {});
+                }
+
+                this.clearUnsupportedWebXRMessage();
+                if (this.activeMessageKey !== 'webxr-ready') {
+                    this.showMessage(this.getString('livePreviewReady'), false, 'live-preview');
+                }
+                this.showPermission(false);
+                if (this.videoContainer) {
+                    this.videoContainer.classList.remove('ar-wallpaper-modal__video-container--static');
+                }
+
+                this.video.addEventListener('loadedmetadata', () => {
+                    if (!this.canvas) {
+                        return;
+                    }
+                    this.canvas.width = this.video.videoWidth;
+                    this.canvas.height = this.video.videoHeight;
+                    this.videoAspect = this.video.videoWidth / Math.max(this.video.videoHeight, 1);
+                }, { once: true });
+
+                return null;
+            })
+            .catch((error) => {
+                if (error && error.message === 'camera-denied') {
+                    return this.useStaticFallback(this.getString('cameraBlocked'));
+                }
+
+                const lastError = error && error.name ? error : null;
+                const fallbackMessage = lastError && (lastError.name === 'NotAllowedError' || lastError.name === 'SecurityError')
+                    ? 'cameraBlocked'
+                    : lastError && (lastError.name === 'NotFoundError' || lastError.name === 'OverconstrainedError')
+                        ? 'cameraUnavailable'
+                        : 'fallbackPreview';
+
+                console.error('Unable to access camera', error);
+                return this.useStaticFallback(this.getString(fallbackMessage));
+            });
+    }
+
+    clearUnsupportedWebXRMessage() {
+        if (!this.activeMessageKey) {
             return;
         }
 
-        try {
-            this.stream = await navigator.mediaDevices.getUserMedia({
-                video: { facingMode: 'environment' },
-                audio: false,
-            });
-            this.video.srcObject = this.stream;
-            await this.video.play();
-            this.video.addEventListener('loadedmetadata', () => {
-                if (!this.canvas) {
-                    return;
-                }
-                this.canvas.width = this.video.videoWidth;
-                this.canvas.height = this.video.videoHeight;
-                this.videoAspect = this.video.videoWidth / Math.max(this.video.videoHeight, 1);
-            }, { once: true });
-        } catch (error) {
-            console.error('Unable to access camera', error);
-            this.showPermission(true, arWallpaperPreview.strings.cameraDenied);
+        const unsupportedKeys = ['webxr-unsupported', 'webxr-status'];
+        if (unsupportedKeys.includes(this.activeMessageKey)) {
+            this.hideMessage();
         }
     }
 
@@ -311,18 +524,34 @@ class ARWallpaperPreview {
         this.webxrControl.hidden = !show;
     }
 
-    showMessage(message, sticky = false) {
+    useStaticFallback(message = '') {
+        return this.stopFallbackCamera().then(() => {
+            if (this.videoContainer) {
+                this.videoContainer.classList.add('ar-wallpaper-modal__video-container--static');
+            }
+
+            if (message) {
+                this.showMessage(message, true, 'fallback');
+            }
+
+            this.showPermission(false);
+        });
+    }
+
+    showMessage(message, sticky = false, key = '') {
         if (!this.webxrMessage) {
             return;
         }
 
         this.webxrMessage.textContent = message;
         this.webxrMessage.classList.add('is-visible');
+        this.activeMessageKey = key;
 
         if (!sticky) {
             window.clearTimeout(this.messageTimer);
             this.messageTimer = window.setTimeout(() => {
                 this.webxrMessage.classList.remove('is-visible');
+                this.activeMessageKey = '';
             }, 3200);
         }
     }
@@ -331,30 +560,43 @@ class ARWallpaperPreview {
         if (this.webxrMessage) {
             this.webxrMessage.classList.remove('is-visible');
         }
+        this.activeMessageKey = '';
     }
 
-    async checkWebXRSupport() {
+    checkWebXRSupport() {
+        if (!window.isSecureContext) {
+            return Promise.resolve({
+                supported: false,
+                message: this.getString('secureContext'),
+            });
+        }
+
         if (!navigator.xr || !navigator.xr.isSessionSupported) {
-            return false;
+            return Promise.resolve({
+                supported: false,
+                message: this.getString('webxrNotSupported'),
+            });
         }
 
-        try {
-            return await navigator.xr.isSessionSupported('immersive-ar');
-        } catch (error) {
-            return false;
-        }
+        return Promise.resolve(navigator.xr.isSessionSupported('immersive-ar'))
+            .then((supported) => ({
+                supported,
+                message: supported ? '' : this.getString('webxrNotSupported'),
+            }))
+            .catch(() => ({
+                supported: false,
+                message: this.getString('webxrNotSupported'),
+            }));
     }
 
-    async launchWebXR() {
+    launchWebXR() {
         if (!this.webxrSupported || this.webxrSession) {
-            return;
+            return Promise.resolve();
         }
 
-        this.showMessage(arWallpaperPreview.strings.loadingWebXR, true);
-        await this.stopFallbackCamera();
+        this.showMessage(arWallpaperPreview.strings.loadingWebXR, true, 'webxr-loading');
 
-        try {
-            const THREE = await import('https://cdn.jsdelivr.net/npm/three@0.155.0/build/three.module.js');
+        const setupWebXR = (THREE) => {
             const { Mesh, MeshBasicMaterial, PlaneGeometry, RingGeometry, Scene, PerspectiveCamera, WebGLRenderer, TextureLoader, DoubleSide, AmbientLight, HemisphereLight } = THREE;
 
             this.webxrRenderer = new WebGLRenderer({ antialias: true, alpha: true });
@@ -385,99 +627,109 @@ class ARWallpaperPreview {
 
             const textureLoader = new TextureLoader();
             textureLoader.crossOrigin = 'anonymous';
-            const texture = await new Promise((resolve, reject) => {
+
+            return new Promise((resolve, reject) => {
                 textureLoader.load(this.imageUrl, resolve, undefined, reject);
-            });
+            }).then((texture) => {
+                const aspect = this.image && this.image.naturalHeight ? this.image.naturalWidth / this.image.naturalHeight : 1.5;
+                const baseHeight = 2.2;
+                const baseWidth = baseHeight * aspect;
+                const geometry = new PlaneGeometry(baseWidth, baseHeight);
+                const material = new MeshBasicMaterial({ map: texture, side: DoubleSide, transparent: true });
+                this.webxrWallpaperMesh = new Mesh(geometry, material);
+                this.webxrWallpaperMesh.visible = false;
+                this.webxrScene.add(this.webxrWallpaperMesh);
+                this.updateWebXRScale();
+                this.updateWebXRRotation();
 
-            const aspect = this.image && this.image.naturalHeight ? this.image.naturalWidth / this.image.naturalHeight : 1.5;
-            const baseHeight = 2.2;
-            const baseWidth = baseHeight * aspect;
-            const geometry = new PlaneGeometry(baseWidth, baseHeight);
-            const material = new MeshBasicMaterial({ map: texture, side: DoubleSide, transparent: true });
-            this.webxrWallpaperMesh = new Mesh(geometry, material);
-            this.webxrWallpaperMesh.visible = false;
-            this.webxrScene.add(this.webxrWallpaperMesh);
-            this.updateWebXRScale();
-            this.updateWebXRRotation();
+                const sessionInit = {
+                    requiredFeatures: ['hit-test'],
+                    optionalFeatures: ['dom-overlay'],
+                    domOverlay: { root: this.modal },
+                };
 
-            const sessionInit = {
-                requiredFeatures: ['hit-test'],
-                optionalFeatures: ['dom-overlay'],
-                domOverlay: { root: this.modal },
-            };
+                return Promise.resolve(navigator.xr.requestSession('immersive-ar', sessionInit))
+                    .then((session) => {
+                        this.webxrSession = session;
+                        this.webxrRenderer.xr.setReferenceSpaceType('local');
+                        return Promise.resolve(this.webxrRenderer.xr.setSession(session));
+                    })
+                    .then(() => {
+                        this.webxrSession.addEventListener('end', () => this.cleanupWebXR(true));
 
-            this.webxrSession = await navigator.xr.requestSession('immersive-ar', sessionInit);
-            this.webxrRenderer.xr.setReferenceSpaceType('local');
-            await this.webxrRenderer.xr.setSession(this.webxrSession);
-
-            this.webxrSession.addEventListener('end', () => this.cleanupWebXR(true));
-
-            const controller = this.webxrRenderer.xr.getController(0);
-            controller.addEventListener('select', () => {
-                if (this.webxrReticle.visible) {
-                    this.webxrWallpaperMesh.visible = true;
-                    this.webxrWallpaperMesh.position.setFromMatrixPosition(this.webxrReticle.matrix);
-                    this.webxrWallpaperMesh.quaternion.setFromRotationMatrix(this.webxrReticle.matrix);
-                    const uniformScale = this.scale;
-                    this.webxrWallpaperMesh.scale.set(uniformScale, uniformScale, uniformScale);
-                    this.updateWebXRRotation();
-                }
-            });
-            this.webxrScene.add(controller);
-
-            this.webxrHitTestSource = null;
-            this.webxrHitTestRequested = false;
-            this.webxrLocalSpace = null;
-            this.webxrViewerSpace = null;
-
-            const onXRFrame = (time, frame) => {
-                const session = frame.session;
-
-                if (!this.webxrHitTestRequested) {
-                    this.webxrHitTestRequested = true;
-                    session.requestReferenceSpace('viewer').then((viewerSpace) => {
-                        this.webxrViewerSpace = viewerSpace;
-                        session.requestHitTestSource({ space: viewerSpace }).then((source) => {
-                            this.webxrHitTestSource = source;
-                        }).catch(() => {
-                            this.webxrHitTestRequested = false;
+                        const controller = this.webxrRenderer.xr.getController(0);
+                        controller.addEventListener('select', () => {
+                            if (this.webxrReticle.visible) {
+                                this.webxrWallpaperMesh.visible = true;
+                                this.webxrWallpaperMesh.position.setFromMatrixPosition(this.webxrReticle.matrix);
+                                this.webxrWallpaperMesh.quaternion.setFromRotationMatrix(this.webxrReticle.matrix);
+                                const uniformScale = this.scale;
+                                this.webxrWallpaperMesh.scale.set(uniformScale, uniformScale, uniformScale);
+                                this.updateWebXRRotation();
+                            }
                         });
-                    }).catch(() => {
+                        this.webxrScene.add(controller);
+
+                        this.webxrHitTestSource = null;
                         this.webxrHitTestRequested = false;
-                    });
-
-                    session.requestReferenceSpace('local').then((refSpace) => {
-                        this.webxrLocalSpace = refSpace;
-                    }).catch(() => {
                         this.webxrLocalSpace = null;
+                        this.webxrViewerSpace = null;
+
+                        const onXRFrame = (time, frame) => {
+                            const session = frame.session;
+
+                            if (!this.webxrHitTestRequested) {
+                                this.webxrHitTestRequested = true;
+                                session.requestReferenceSpace('viewer').then((viewerSpace) => {
+                                    this.webxrViewerSpace = viewerSpace;
+                                    session.requestHitTestSource({ space: viewerSpace }).then((source) => {
+                                        this.webxrHitTestSource = source;
+                                    }).catch(() => {
+                                        this.webxrHitTestRequested = false;
+                                    });
+                                }).catch(() => {
+                                    this.webxrHitTestRequested = false;
+                                });
+
+                                session.requestReferenceSpace('local').then((refSpace) => {
+                                    this.webxrLocalSpace = refSpace;
+                                }).catch(() => {
+                                    this.webxrLocalSpace = null;
+                                });
+                            }
+
+                            const referenceSpace = this.webxrLocalSpace || this.webxrRenderer.xr.getReferenceSpace();
+
+                            if (this.webxrHitTestSource && referenceSpace) {
+                                const results = frame.getHitTestResults(this.webxrHitTestSource);
+                                if (results.length > 0) {
+                                    const hit = results[0];
+                                    const pose = hit.getPose(referenceSpace);
+                                    this.webxrReticle.visible = true;
+                                    this.webxrReticle.matrix.fromArray(pose.transform.matrix);
+                                } else {
+                                    this.webxrReticle.visible = false;
+                                }
+                            }
+
+                            this.webxrRenderer.render(this.webxrScene, this.webxrCamera);
+                        };
+
+                        this.webxrRenderer.setAnimationLoop(onXRFrame);
+                        this.hideMessage();
                     });
-                }
+            });
+        };
 
-                const referenceSpace = this.webxrLocalSpace || this.webxrRenderer.xr.getReferenceSpace();
-
-                if (this.webxrHitTestSource && referenceSpace) {
-                    const results = frame.getHitTestResults(this.webxrHitTestSource);
-                    if (results.length > 0) {
-                        const hit = results[0];
-                        const pose = hit.getPose(referenceSpace);
-                        this.webxrReticle.visible = true;
-                        this.webxrReticle.matrix.fromArray(pose.transform.matrix);
-                    } else {
-                        this.webxrReticle.visible = false;
-                    }
-                }
-
-                this.webxrRenderer.render(this.webxrScene, this.webxrCamera);
-            };
-
-            this.webxrRenderer.setAnimationLoop(onXRFrame);
-            this.hideMessage();
-        } catch (error) {
-            console.error('WebXR launch failed', error);
-            this.showMessage(arWallpaperPreview.strings.webxrFailed, true);
-            this.cleanupWebXR();
-            await this.startFallbackCamera();
-        }
+        return this.stopFallbackCamera()
+            .then(() => Promise.resolve(import('https://cdn.jsdelivr.net/npm/three@0.155.0/build/three.module.js')))
+            .then((THREE) => setupWebXR(THREE))
+            .catch((error) => {
+                console.error('WebXR launch failed', error);
+                this.showMessage(arWallpaperPreview.strings.webxrFailed, true, 'webxr-error');
+                this.cleanupWebXR();
+                return this.startFallbackCamera();
+            });
     }
 
     updateWebXRScale() {
@@ -497,41 +749,51 @@ class ARWallpaperPreview {
         this.webxrWallpaperMesh.rotation.z = (this.rotation * Math.PI) / 180;
     }
 
-    async stopFallbackCamera() {
-        if (!this.stream) {
-            return;
+    stopFallbackCamera() {
+        if (this.video) {
+            this.video.pause();
+            this.video.srcObject = null;
         }
 
-        this.video.pause();
-        this.video.srcObject = null;
-        this.stream.getTracks().forEach((track) => track.stop());
+        if (this.stream) {
+            this.stream.getTracks().forEach((track) => track.stop());
+        }
+
         this.stream = null;
+
+        return Promise.resolve();
     }
 
-    async close() {
+    close() {
         this.modal.classList.remove('is-visible');
         this.modal.setAttribute('aria-hidden', 'true');
         document.body.classList.remove('ar-wallpaper-modal-open');
         this.hideMessage();
-        await this.stopFallbackCamera();
-        await this.endWebXRSession();
-        this.resetSnapshotLink();
-        this.isDragging = false;
-        this.dragPointerId = null;
-        if (this.wallpaper) {
-            this.wallpaper.classList.remove('is-dragging');
-        }
+        return this.stopFallbackCamera()
+            .then(() => this.endWebXRSession())
+            .then(() => {
+                this.resetSnapshotLink();
+                this.isDragging = false;
+                this.dragPointerId = null;
+                if (this.wallpaper) {
+                    this.wallpaper.classList.remove('is-dragging');
+                }
+            });
     }
 
-    async endWebXRSession() {
-        if (this.webxrSession) {
-            try {
-                await this.webxrSession.end();
-            } catch (error) {
-                // ignore
-            }
+    endWebXRSession() {
+        if (!this.webxrSession) {
+            this.cleanupWebXR();
+            return Promise.resolve();
         }
-        this.cleanupWebXR();
+
+        const session = this.webxrSession;
+        return Promise.resolve()
+            .then(() => session.end())
+            .catch(() => {})
+            .then(() => {
+                this.cleanupWebXR();
+            });
     }
 
     cleanupWebXR(restartFallback = false) {
@@ -578,20 +840,20 @@ class ARWallpaperPreview {
         }
     }
 
-    async captureSnapshot() {
+    captureSnapshot() {
         if (!this.canvas || !this.ctx) {
-            return;
+            return Promise.resolve();
         }
 
         if (!this.image) {
-            return;
+            return Promise.resolve();
         }
 
         const width = this.video && this.video.videoWidth ? this.video.videoWidth : this.canvas.width;
         const height = this.video && this.video.videoHeight ? this.video.videoHeight : this.canvas.height;
 
         if (!width || !height) {
-            return;
+            return Promise.resolve();
         }
 
         this.canvas.width = width;
@@ -602,6 +864,12 @@ class ARWallpaperPreview {
 
         if (this.stream && this.video) {
             this.ctx.drawImage(this.video, 0, 0, width, height);
+        } else {
+            const gradient = this.ctx.createLinearGradient(0, 0, width, height);
+            gradient.addColorStop(0, '#0f172a');
+            gradient.addColorStop(1, '#1e293b');
+            this.ctx.fillStyle = gradient;
+            this.ctx.fillRect(0, 0, width, height);
         }
 
         const aspect = this.image.naturalWidth / Math.max(this.image.naturalHeight, 1);
@@ -624,6 +892,8 @@ class ARWallpaperPreview {
             this.snapshotLink.textContent = arWallpaperPreview.strings.snapshotReady;
             this.snapshotLink.click();
         }
+
+        return Promise.resolve();
     }
 }
 
