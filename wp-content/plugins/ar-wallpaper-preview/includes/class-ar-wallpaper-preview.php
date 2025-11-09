@@ -98,7 +98,12 @@ class AR_Wallpaper_Preview {
             'strings'       => array(
                 'instructions'       => __( 'Point your camera at your wall to preview the wallpaper.', 'ar-wallpaper-preview' ),
                 'webxrNotSupported'  => __( 'Your device does not support WebXR. Showing fallback preview.', 'ar-wallpaper-preview' ),
+                'secureContext'      => __( 'AR preview requires a secure (HTTPS) connection. Reload the page over HTTPS to enable camera and WebXR features.', 'ar-wallpaper-preview' ),
                 'cameraDenied'       => __( 'Camera access was denied. Unable to show live preview.', 'ar-wallpaper-preview' ),
+                'cameraPermission'   => __( 'Please allow camera access to enable the live preview.', 'ar-wallpaper-preview' ),
+                'cameraBlocked'      => __( 'Camera access is blocked. Update your browser permissions to use the live preview.', 'ar-wallpaper-preview' ),
+                'cameraUnavailable'  => __( 'No compatible camera was found. Showing static preview.', 'ar-wallpaper-preview' ),
+                'fallbackPreview'    => __( 'Live camera preview is unavailable. Showing static background instead.', 'ar-wallpaper-preview' ),
                 'snapshotReady'      => __( 'Snapshot ready! Long press or tap to save.', 'ar-wallpaper-preview' ),
                 'startWebXR'         => __( 'Start AR Session', 'ar-wallpaper-preview' ),
                 'fallbackTitle'      => __( 'Fallback Preview', 'ar-wallpaper-preview' ),
@@ -156,7 +161,7 @@ class AR_Wallpaper_Preview {
                     <div class="ar-wallpaper-modal__webxr-message"></div>
                     <div class="ar-wallpaper-modal__webxr-container" hidden></div>
                     <div class="ar-wallpaper-modal__video-container">
-                        <video class="ar-wallpaper-modal__video" playsinline muted></video>
+                        <video class="ar-wallpaper-modal__video" playsinline muted autoplay></video>
                         <canvas class="ar-wallpaper-modal__canvas"></canvas>
                         <div class="ar-wallpaper-modal__wallpaper" aria-hidden="true"></div>
                         <div class="ar-wallpaper-modal__permission-message" hidden></div>
