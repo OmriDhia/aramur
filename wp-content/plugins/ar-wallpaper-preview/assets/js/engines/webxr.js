@@ -2,33 +2,63 @@ import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.m
 import { ARButton } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/webxr/ARButton.js';
 
 /**
- * WebXR Engine for AR Wallpaper Preview.
- * Uses Three.js and the WebXR Device API for plane detection and hit-testing.
+ * Advanced WebXR engine that performs wall detection, occlusion masking, and
+ * lighting adaptation for a wallpaper preview.
  */
 export class WebXREngine {
     constructor(container, data) {
         this.container = container;
         this.data = data;
+
         this.renderer = null;
         this.scene = null;
         this.camera = null;
+        this.reticle = null;
         this.wallpaperMesh = null;
         this.hitTestSource = null;
-        this.reticle = null;
+        this.viewerSpace = null;
+        this.referenceSpace = null;
         this.controller = null;
+        this.lightProbe = null;
+
+        this.detectedWall = null;
+        this.detectedWallPose = null;
+        this.detectedWallMatrix = null;
+        this.planes = new Map();
+
+        this.wallpaperWidthMeters = Math.max(0.1, this.data.width_cm * 0.01);
+        this.wallpaperHeightMeters = Math.max(0.1, this.data.height_cm * 0.01);
+
         this.isPlaced = false;
+        this.targetPosition = new THREE.Vector3();
+        this.targetQuaternion = new THREE.Quaternion();
+        this.smoothedPosition = new THREE.Vector3();
+        this.smoothedQuaternion = new THREE.Quaternion();
+        this.positionLerp = 0.2;
+        this.rotationSlerp = 0.25;
+
+        this.depthCanvas = document.createElement('canvas');
+        this.depthCtx = this.depthCanvas.getContext('2d');
+        this.depthTexture = new THREE.CanvasTexture(this.depthCanvas);
+        this.depthSupported = false;
+        this.depthCanvas.width = 1;
+        this.depthCanvas.height = 1;
+        this.depthCtx.fillStyle = '#ffffff';
+        this.depthCtx.fillRect(0, 0, 1, 1);
+        this.depthTexture.needsUpdate = true;
+
         this.init();
     }
 
     async init() {
-        if (!navigator.xr) {
-            this.container.innerHTML = "WebXR not supported on this device/browser.";
+        if (!navigator.xr || !navigator.xr.isSessionSupported) {
+            this.showStatus(this.data.i18n.unsupported_device);
             return;
         }
 
-        const isSupported = await navigator.xr.isSessionSupported('immersive-ar');
-        if (!isSupported) {
-            this.container.innerHTML = "Immersive AR session not supported.";
+        const supported = await navigator.xr.isSessionSupported('immersive-ar');
+        if (!supported) {
+            this.showStatus(this.data.i18n.unsupported_device);
             return;
         }
 
@@ -41,28 +71,53 @@ export class WebXREngine {
 
     setupScene() {
         this.scene = new THREE.Scene();
-
-        // Camera is managed by the WebXR session
         this.camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
 
-        // Lighting
-        this.scene.add(new THREE.HemisphereLight(0x808080, 0x606060, 1));
-        const light = new THREE.DirectionalLight(0xffffff, 0.5);
-        light.position.set(0.5, 1, 0.25);
-        this.scene.add(light);
+        const ambient = new THREE.HemisphereLight(0xffffff, 0x222244, 0.6);
+        const directional = new THREE.DirectionalLight(0xffffff, 0.5);
+        directional.position.set(0.5, 1.2, 0.5);
+        this.scene.add(ambient);
+        this.scene.add(directional);
 
-        // Reticle (for hit-testing visualization)
-        const geometry = new THREE.RingGeometry(0.15, 0.2, 32).rotateX(-Math.PI / 2);
-        const material = new THREE.MeshBasicMaterial({ color: 0xffffff });
-        this.reticle = new THREE.Mesh(geometry, material);
+        const reticleGeometry = new THREE.RingGeometry(0.12, 0.18, 32);
+        const reticleMaterial = new THREE.MeshBasicMaterial({ color: 0x00ffc3 });
+        this.reticle = new THREE.Mesh(reticleGeometry, reticleMaterial);
+        this.reticle.rotation.x = -Math.PI / 2;
         this.reticle.matrixAutoUpdate = false;
+        this.reticle.matrix.identity();
         this.reticle.visible = false;
         this.scene.add(this.reticle);
 
-        // Placeholder for the wallpaper mesh
         this.wallpaperMesh = this.createWallpaperMesh();
         this.wallpaperMesh.visible = false;
         this.scene.add(this.wallpaperMesh);
+    }
+
+    createWallpaperMesh() {
+        const geometry = new THREE.PlaneGeometry(this.wallpaperWidthMeters, this.wallpaperHeightMeters, 1, 1);
+        const textureLoader = new THREE.TextureLoader();
+        const texture = textureLoader.load(this.data.image_url, (tex) => {
+            if (this.data.tiling) {
+                tex.wrapS = THREE.RepeatWrapping;
+                tex.wrapT = THREE.RepeatWrapping;
+                tex.repeat.set(this.data.repeat_x, this.data.repeat_y);
+            }
+            if (tex.image && (tex.image.width > this.data.max_texture_resolution || tex.image.height > this.data.max_texture_resolution)) {
+                console.warn('Wallpaper texture exceeds configured max resolution.');
+            }
+        });
+
+        const material = new THREE.MeshStandardMaterial({
+            map: texture,
+            side: THREE.DoubleSide,
+            roughness: 0.82,
+            metalness: 0,
+            transparent: true,
+            alphaMap: this.depthTexture,
+            alphaTest: 0.45,
+        });
+
+        return new THREE.Mesh(geometry, material);
     }
 
     setupRenderer() {
@@ -70,13 +125,25 @@ export class WebXREngine {
         this.renderer.setPixelRatio(window.devicePixelRatio);
         this.renderer.setSize(window.innerWidth, window.innerHeight);
         this.renderer.xr.enabled = true;
+        this.renderer.domElement.style.width = '100%';
+        this.renderer.domElement.style.height = '100%';
         this.container.appendChild(this.renderer.domElement);
     }
 
     setupARButton() {
-        const button = ARButton.createButton(this.renderer, { requiredFeatures: ['hit-test', 'dom-overlay'], optionalFeatures: ['plane-detection'] });
-        button.textContent = this.data.i18n.place;
+        const sessionInit = {
+            requiredFeatures: ['hit-test'],
+            optionalFeatures: ['plane-detection', 'dom-overlay', 'light-estimation', 'depth-sensing'],
+            domOverlay: { root: this.container },
+            depthSensing: {
+                usagePreference: ['gpu-optimized', 'cpu-optimized'],
+                dataFormatPreference: ['luminance-alpha', 'float32'],
+            },
+        };
+
+        const button = ARButton.createButton(this.renderer, sessionInit);
         button.id = 'arwp-ar-button';
+        button.textContent = this.data.i18n.place;
         this.container.appendChild(button);
     }
 
@@ -87,30 +154,34 @@ export class WebXREngine {
     }
 
     onWindowResize() {
+        if (!this.camera || !this.renderer) {
+            return;
+        }
         this.camera.aspect = window.innerWidth / window.innerHeight;
         this.camera.updateProjectionMatrix();
         this.renderer.setSize(window.innerWidth, window.innerHeight);
     }
 
-    onSessionStart(event) {
+    async onSessionStart(event) {
         const session = event.target.getSession();
-        session.requestReferenceSpace('viewer').then((referenceSpace) => {
-            this.viewerSpace = referenceSpace;
-            session.requestHitTestSource({ space: this.viewerSpace }).then((hitTestSource) => {
-                this.hitTestSource = hitTestSource;
-            });
-        });
+
+        this.viewerSpace = await session.requestReferenceSpace('viewer');
+        this.referenceSpace = await session.requestReferenceSpace('local');
+        this.hitTestSource = await session.requestHitTestSource({ space: this.viewerSpace });
+
+        if (session.requestLightProbe) {
+            try {
+                this.lightProbe = await session.requestLightProbe();
+            } catch (error) {
+                console.warn('Light probe not available', error);
+            }
+        }
 
         this.controller = this.renderer.xr.getController(0);
-        this.controller.addEventListener('select', this.onSelect.bind(this));
+        this.controller.addEventListener('select', () => this.onSelect());
         this.scene.add(this.controller);
 
-        // Show guidance
-        const guidance = document.getElementById('arwp-guidance');
-        if (guidance) {
-            guidance.textContent = this.data.i18n.guidance_overlay;
-            guidance.style.display = 'block';
-        }
+        this.showStatus(this.data.i18n.guidance_overlay);
     }
 
     onSessionEnd() {
@@ -118,116 +189,261 @@ export class WebXREngine {
             this.hitTestSource.cancel();
             this.hitTestSource = null;
         }
+
         this.isPlaced = false;
         this.wallpaperMesh.visible = false;
         this.reticle.visible = false;
-
-        const guidance = document.getElementById('arwp-guidance');
-        if (guidance) {
-            guidance.textContent = this.data.i18n.unsupported_device; // Reset to a generic message
-            guidance.style.display = 'block';
-        }
+        this.detectedWall = null;
+        this.detectedWallPose = null;
+        this.showStatus(this.data.i18n.guidance_overlay);
     }
 
     onSelect() {
-        if (this.reticle.visible && !this.isPlaced) {
-            this.placeWallpaper();
+        if (!this.reticle.visible) {
+            return;
         }
-    }
 
-    placeWallpaper() {
-        if (!this.reticle.visible) return;
+        const matrix = new THREE.Matrix4();
+        matrix.copy(this.reticle.matrix);
+        this.targetPosition.setFromMatrixPosition(matrix);
+        this.targetQuaternion.setFromRotationMatrix(matrix);
+        this.smoothedPosition.copy(this.targetPosition);
+        this.smoothedQuaternion.copy(this.targetQuaternion);
 
-        // Place the wallpaper mesh at the reticle's position and orientation
-        this.wallpaperMesh.position.setFromMatrixPosition(this.reticle.matrix);
-        this.wallpaperMesh.quaternion.setFromRotationMatrix(this.reticle.matrix);
-
-        // Rotate to be upright on the wall (assuming hit-test gives a horizontal plane by default, but we want a wall)
-        // For simplicity, we assume the hit-test is on a floor/horizontal surface, and we rotate the wallpaper to be vertical.
-        // A proper implementation would use the plane-detection feature to get the wall's normal.
-        // For now, we rotate it 90 degrees around the X axis to stand up.
-        this.wallpaperMesh.rotateX(-Math.PI / 2);
-
+        this.wallpaperMesh.position.copy(this.targetPosition);
+        this.wallpaperMesh.quaternion.copy(this.targetQuaternion);
         this.wallpaperMesh.visible = true;
-        this.reticle.visible = false;
         this.isPlaced = true;
+        this.reticle.visible = false;
+        this.showStatus('');
 
-        // Hide guidance
-        const guidance = document.getElementById('arwp-guidance');
-        if (guidance) {
-            guidance.style.display = 'none';
+        this.fitWallpaperToWall();
+    }
+
+    fitWallpaperToWall() {
+        if (!this.detectedWall || !this.detectedWall.polygon || !this.detectedWallMatrix) {
+            return;
         }
 
-        // TODO: Implement UI controls for Move, Rotate, Scale, Tile, Light
-        // This is a placeholder for the complex UI/UX part.
-        const uiControls = document.getElementById('arwp-ui-controls');
-        if (uiControls) {
-            uiControls.innerHTML = `
-                <button>${this.data.i18n.move}</button>
-                <button>${this.data.i18n.rotate}</button>
-                <button>${this.data.i18n.scale}</button>
-                <button>${this.data.i18n.tile}</button>
-                <button>${this.data.i18n.light}</button>
-                <button>${this.data.i18n.reset}</button>
-                <button>${this.data.i18n.snapshot}</button>
-            `;
+        const polygon = Array.from(this.detectedWall.polygon);
+        if (polygon.length < 3) {
+            return;
+        }
+
+        let minX = Number.POSITIVE_INFINITY;
+        let maxX = Number.NEGATIVE_INFINITY;
+        let minY = Number.POSITIVE_INFINITY;
+        let maxY = Number.NEGATIVE_INFINITY;
+
+        for (let i = 0; i < polygon.length; i += 3) {
+            const x = polygon[i];
+            const y = polygon[i + 1];
+            minX = Math.min(minX, x);
+            maxX = Math.max(maxX, x);
+            minY = Math.min(minY, y);
+            maxY = Math.max(maxY, y);
+        }
+
+        const planeWidth = Math.max(0.1, maxX - minX);
+        const planeHeight = Math.max(0.1, maxY - minY);
+        const scaleX = planeWidth / this.wallpaperWidthMeters;
+        const scaleY = planeHeight / this.wallpaperHeightMeters;
+        const targetScale = Math.min(scaleX, scaleY) * 0.95;
+
+        this.wallpaperMesh.scale.set(targetScale, targetScale, 1);
+    }
+
+    detectWalls(frame, referenceSpace) {
+        const worldInfo = frame.worldInformation;
+        if (!worldInfo || !worldInfo.detectedPlanes) {
+            return;
+        }
+
+        for (const plane of worldInfo.detectedPlanes) {
+            const pose = frame.getPose(plane.planeSpace, referenceSpace);
+            if (!pose) {
+                continue;
+            }
+
+            if (!this.isVerticalPlane(pose)) {
+                continue;
+            }
+
+            this.detectedWall = plane;
+            this.detectedWallPose = pose;
+            this.detectedWallMatrix = new THREE.Matrix4().fromArray(pose.transform.matrix);
+            break;
         }
     }
 
-    createWallpaperMesh() {
-        // Convert cm to meters (1cm = 0.01m)
-        const width = this.data.width_cm * 0.01;
-        const height = this.data.height_cm * 0.01;
+    isVerticalPlane(pose) {
+        if (!pose || !pose.transform) {
+            return false;
+        }
 
-        const geometry = new THREE.PlaneGeometry(width, height);
-
-        const textureLoader = new THREE.TextureLoader();
-        const texture = textureLoader.load(this.data.image_url, (tex) => {
-            // Adjust texture properties for tiling
-            if (this.data.tiling) {
-                tex.wrapS = THREE.RepeatWrapping;
-                tex.wrapT = THREE.RepeatWrapping;
-                tex.repeat.set(this.data.repeat_x, this.data.repeat_y);
-            }
-            // Simple check for max resolution (actual resizing would require canvas/image processing)
-            if (tex.image.width > this.data.max_texture_resolution || tex.image.height > this.data.max_texture_resolution) {
-                console.warn(`Texture resolution (${tex.image.width}x${tex.image.height}) exceeds max limit (${this.data.max_texture_resolution}). Performance may be affected.`);
-            }
-        });
-
-        const material = new THREE.MeshStandardMaterial({
-            map: texture,
-            side: THREE.DoubleSide,
-            color: new THREE.Color(this.data.brightness, this.data.brightness, this.data.brightness), // Adjust brightness
-        });
-
-        const mesh = new THREE.Mesh(geometry, material);
-        mesh.name = "WallpaperMesh";
-        return mesh;
+        const { orientation } = pose.transform;
+        const quaternion = new THREE.Quaternion(orientation.x, orientation.y, orientation.z, orientation.w);
+        const normal = new THREE.Vector3(0, 0, -1).applyQuaternion(quaternion).normalize();
+        return Math.abs(normal.y) < 0.35; // walls have near-zero Y component
     }
 
-    animate() {
-        this.renderer.setAnimationLoop(this.render.bind(this));
+    updateReticleFromPose(pose) {
+        if (!pose) {
+            this.reticle.visible = false;
+            return;
+        }
+
+        const matrix = new THREE.Matrix4().fromArray(pose.transform.matrix);
+        const rotationMatrix = new THREE.Matrix4().extractRotation(matrix);
+        const normal = new THREE.Vector3(0, 0, -1).applyMatrix4(rotationMatrix).normalize();
+        if (Math.abs(normal.y) > 0.5) {
+            // likely horizontal surface, ignore
+            return;
+        }
+
+        this.reticle.matrix.copy(matrix);
+        this.detectedWallMatrix = matrix.clone();
+        this.reticle.visible = true;
+
+        if (!this.isPlaced) {
+            this.targetPosition.setFromMatrixPosition(matrix);
+            this.targetQuaternion.setFromRotationMatrix(matrix);
+        }
     }
 
-    render(timestamp, frame) {
-        if (frame) {
-            const referenceSpace = this.renderer.xr.getReferenceSpace();
-            const session = this.renderer.xr.getSession();
+    updateLighting(frame) {
+        if (!this.lightProbe || !frame.getLightEstimate) {
+            return;
+        }
 
-            if (this.hitTestSource && !this.isPlaced) {
-                const hitTestResults = frame.getHitTestResults(this.hitTestSource);
+        try {
+            const estimate = frame.getLightEstimate(this.lightProbe);
+            if (!estimate) {
+                return;
+            }
 
-                if (hitTestResults.length) {
-                    const hit = hitTestResults[0];
-                    this.reticle.visible = true;
-                    this.reticle.matrix.fromArray(hit.getPose(referenceSpace).transform.matrix);
-                } else {
-                    this.reticle.visible = false;
+            const intensity = estimate.primaryLightIntensity || [1, 1, 1];
+            const average = (intensity[0] + intensity[1] + intensity[2]) / 3;
+            this.wallpaperMesh.material.color.setScalar(average);
+            this.wallpaperMesh.material.needsUpdate = true;
+        } catch (error) {
+            console.warn('Unable to apply light estimate', error);
+        }
+    }
+
+    updateDepthOcclusion(frame, referenceSpace) {
+        if (!frame.getViewerPose || !frame.getDepthInformation) {
+            return;
+        }
+
+        const viewerPose = frame.getViewerPose(referenceSpace);
+        if (!viewerPose) {
+            return;
+        }
+
+        try {
+            for (const view of viewerPose.views) {
+                const depthInfo = frame.getDepthInformation(view);
+                if (!depthInfo) {
+                    continue;
                 }
+
+                this.depthSupported = true;
+
+                const width = depthInfo.width;
+                const height = depthInfo.height;
+                if (!width || !height) {
+                    continue;
+                }
+
+                this.depthCanvas.width = width;
+                this.depthCanvas.height = height;
+                const imageData = this.depthCtx.createImageData(width, height);
+
+                const wallpaperPosition = new THREE.Vector3();
+                this.wallpaperMesh.getWorldPosition(wallpaperPosition);
+                const cameraPosition = new THREE.Vector3();
+                this.camera.getWorldPosition(cameraPosition);
+                const wallpaperDistance = cameraPosition.distanceTo(wallpaperPosition);
+
+                const tolerance = 0.1;
+                for (let y = 0; y < height; y++) {
+                    for (let x = 0; x < width; x++) {
+                        const depth = depthInfo.getDepthInMeters(x, y);
+                        const idx = (y * width + x) * 4;
+                        if (!depth || depth < wallpaperDistance - tolerance) {
+                            imageData.data[idx] = 0;
+                            imageData.data[idx + 1] = 0;
+                            imageData.data[idx + 2] = 0;
+                            imageData.data[idx + 3] = 255;
+                        } else {
+                            imageData.data[idx] = 255;
+                            imageData.data[idx + 1] = 255;
+                            imageData.data[idx + 2] = 255;
+                            imageData.data[idx + 3] = 0;
+                        }
+                    }
+                }
+
+                this.depthCtx.putImageData(imageData, 0, 0);
+                this.depthTexture.needsUpdate = true;
+                break;
+            }
+        } catch (error) {
+            console.warn('Depth occlusion update failed', error);
+        }
+    }
+
+    render(time, frame) {
+        if (frame) {
+            const referenceSpace = this.referenceSpace || this.renderer.xr.getReferenceSpace();
+
+            if (this.hitTestSource) {
+                const hits = frame.getHitTestResults(this.hitTestSource);
+                if (hits.length > 0) {
+                    const pose = hits[0].getPose(referenceSpace);
+                    if (pose && this.isVerticalPlane(pose)) {
+                        this.updateReticleFromPose(pose);
+                    }
+                }
+            }
+
+            this.detectWalls(frame, referenceSpace);
+            if (this.detectedWallMatrix && !this.isPlaced) {
+                this.updateReticleFromPose({ transform: { matrix: this.detectedWallMatrix.toArray() } });
+            }
+
+            if (this.isPlaced) {
+                this.smoothedPosition.lerp(this.targetPosition, this.positionLerp);
+                this.smoothedQuaternion.slerp(this.targetQuaternion, this.rotationSlerp);
+                this.wallpaperMesh.position.copy(this.smoothedPosition);
+                this.wallpaperMesh.quaternion.copy(this.smoothedQuaternion);
+            }
+
+            this.updateLighting(frame);
+            this.updateDepthOcclusion(frame, referenceSpace);
+
+            if (this.isPlaced && this.detectedWallMatrix) {
+                this.targetPosition.setFromMatrixPosition(this.detectedWallMatrix);
+                this.targetQuaternion.setFromRotationMatrix(this.detectedWallMatrix);
+                this.fitWallpaperToWall();
             }
         }
 
         this.renderer.render(this.scene, this.camera);
+    }
+
+    animate() {
+        this.renderer.setAnimationLoop((time, frame) => this.render(time, frame));
+    }
+
+    showStatus(message) {
+        const guidance = document.getElementById('arwp-guidance');
+        if (!guidance) {
+            return;
+        }
+
+        guidance.textContent = message || '';
+        guidance.style.display = message ? 'block' : 'none';
     }
 }

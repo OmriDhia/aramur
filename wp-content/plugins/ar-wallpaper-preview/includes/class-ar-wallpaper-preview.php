@@ -114,9 +114,14 @@ class AR_Wallpaper_Preview {
                 'loadingWebXR'       => __( 'Preparing AR session…', 'ar-wallpaper-preview' ),
                 'webxrFailed'        => __( 'Unable to start AR session. Using fallback preview instead.', 'ar-wallpaper-preview' ),
                 'close'              => __( 'Close preview', 'ar-wallpaper-preview' ),
+                'fitToWall'          => __( 'Fit to Wall', 'ar-wallpaper-preview' ),
+                'resetPlacement'    => __( 'Reset Placement', 'ar-wallpaper-preview' ),
                 'takeSnapshot'       => __( 'Take Snapshot', 'ar-wallpaper-preview' ),
                 'scaleLabel'         => __( 'Preview size', 'ar-wallpaper-preview' ),
                 'rotationLabel'      => __( 'Rotation', 'ar-wallpaper-preview' ),
+                'occlusionCalibrating' => __( 'Calibrating occlusion mask…', 'ar-wallpaper-preview' ),
+                'fittingWall'        => __( 'Fitting wallpaper to detected wall…', 'ar-wallpaper-preview' ),
+                'resettingPlacement' => __( 'Resetting placement…', 'ar-wallpaper-preview' ),
             ),
             'settings'     => array(
                 'defaultScale'      => apply_filters( 'ar_wallpaper_preview_default_scale', 1.2 ),
@@ -182,6 +187,12 @@ class AR_Wallpaper_Preview {
                             <span class="ar-wallpaper-modal__label ar-wallpaper-modal__label--rotation"></span>
                             <input type="range" min="-45" max="45" step="1" class="ar-wallpaper-modal__rotation" value="0">
                         </label>
+                    </div>
+                    <div class="ar-wallpaper-modal__control ar-wallpaper-modal__control--fit">
+                        <button type="button" class="ar-wallpaper-modal__fit-to-wall"></button>
+                    </div>
+                    <div class="ar-wallpaper-modal__control ar-wallpaper-modal__control--reset">
+                        <button type="button" class="ar-wallpaper-modal__reset"></button>
                     </div>
                     <div class="ar-wallpaper-modal__control ar-wallpaper-modal__control--snapshot">
                         <button type="button" class="ar-wallpaper-modal__snapshot"></button>
