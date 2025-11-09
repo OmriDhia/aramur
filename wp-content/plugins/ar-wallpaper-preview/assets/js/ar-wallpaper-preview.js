@@ -396,6 +396,56 @@ class ARWallpaperPreview {
             } catch (error) {
                 lastError = error;
             }
+
+        }
+
+        if (!this.stream) {
+            console.error('Unable to access camera', lastError);
+            if (lastError && (lastError.name === 'NotAllowedError' || lastError.name === 'SecurityError')) {
+                await this.useStaticFallback(this.getString('cameraBlocked'));
+            } else if (lastError && (lastError.name === 'NotFoundError' || lastError.name === 'OverconstrainedError')) {
+                await this.useStaticFallback(this.getString('cameraUnavailable'));
+            } else {
+                await this.useStaticFallback(this.getString('fallbackPreview'));
+            }
+            return;
+        }
+
+        this.video.srcObject = this.stream;
+
+        const playPromise = this.video.play();
+        if (playPromise && typeof playPromise.catch === 'function') {
+            playPromise.catch(() => {});
+        }
+
+        this.clearUnsupportedWebXRMessage();
+        if (this.activeMessageKey !== 'webxr-ready') {
+            this.showMessage(this.getString('livePreviewReady'), false, 'live-preview');
+        }
+        this.showPermission(false);
+        if (this.videoContainer) {
+            this.videoContainer.classList.remove('ar-wallpaper-modal__video-container--static');
+        }
+
+        this.video.addEventListener('loadedmetadata', () => {
+            if (!this.canvas) {
+                return;
+            }
+            this.canvas.width = this.video.videoWidth;
+            this.canvas.height = this.video.videoHeight;
+            this.videoAspect = this.video.videoWidth / Math.max(this.video.videoHeight, 1);
+        }, { once: true });
+    }
+
+    clearUnsupportedWebXRMessage() {
+        if (!this.activeMessageKey) {
+            return;
+        }
+
+        const unsupportedKeys = ['webxr-unsupported', 'webxr-status'];
+        if (unsupportedKeys.includes(this.activeMessageKey)) {
+            this.hideMessage();
+
         }
 
         if (!this.stream) {
