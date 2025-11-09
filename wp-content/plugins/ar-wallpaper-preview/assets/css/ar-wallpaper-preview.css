@@ -176,6 +176,10 @@
     transition: opacity 0.25s ease-in-out;
     pointer-events: auto;
     cursor: grab;
+    -webkit-mask-repeat: no-repeat;
+    -webkit-mask-size: cover;
+    mask-repeat: no-repeat;
+    mask-size: cover;
 }
 
 .ar-wallpaper-modal__wallpaper.is-visible {
@@ -240,7 +244,9 @@
 }
 
 .ar-wallpaper-modal__snapshot,
-.ar-wallpaper-modal__webxr-button {
+.ar-wallpaper-modal__webxr-button,
+.ar-wallpaper-modal__fit-to-wall,
+.ar-wallpaper-modal__reset {
     width: 100%;
     border: none;
     border-radius: 12px;
@@ -253,9 +259,19 @@
 }
 
 .ar-wallpaper-modal__snapshot:hover,
-.ar-wallpaper-modal__webxr-button:hover {
+.ar-wallpaper-modal__webxr-button:hover,
+.ar-wallpaper-modal__fit-to-wall:hover,
+.ar-wallpaper-modal__reset:hover {
     transform: translateY(-1px);
     box-shadow: 0 12px 24px rgba(99, 102, 241, 0.32);
+}
+
+.ar-wallpaper-modal__reset {
+    background: linear-gradient(135deg, #f97316, #ef4444);
+}
+
+.ar-wallpaper-modal__fit-to-wall {
+    background: linear-gradient(135deg, #22c55e, #14b8a6);
 }
 
 .ar-wallpaper-modal__webxr-message {

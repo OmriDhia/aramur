@@ -6,13 +6,17 @@ import { DepthOcclusionManager } from '../depth-occlusion.js';
 import { SegmentationFallback } from '../segmentation-fallback.js';
 
 /**
+
  * WebXR engine with automatic wall fitting, depth occlusion and segmentation fallback.
+
  */
 export class WebXREngine {
     constructor(container, data, statusCallback = () => {}) {
         this.container = container;
         this.data = data;
+
         this.onStatus = statusCallback;
+
 
         this.renderer = null;
         this.scene = null;
@@ -21,6 +25,7 @@ export class WebXREngine {
         this.wallpaperMesh = null;
         this.hitTestSource = null;
         this.viewerSpace = null;
+
         this.localSpace = null;
         this.controller = null;
         this.isConfirmed = false;
@@ -46,18 +51,23 @@ export class WebXREngine {
         this.performanceMode = data.performance_mode || 'balanced';
         this.segmentationInterval = this.performanceMode === 'battery' ? 50 : (this.performanceMode === 'quality' ? 16 : 33);
 
+
         this.init();
     }
 
     async init() {
+
         if (!navigator.xr) {
             this.showError(this.data.i18n.unsupported_device);
+
             return;
         }
 
         const supported = await navigator.xr.isSessionSupported('immersive-ar');
         if (!supported) {
+
             this.showError(this.data.i18n.unsupported_device);
+
             return;
         }
 
@@ -74,6 +84,7 @@ export class WebXREngine {
         this.scene = new THREE.Scene();
         this.camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
 
+
         const ambient = new THREE.HemisphereLight(0xffffff, 0x444444, 0.6);
         this.scene.add(ambient);
         const dir = new THREE.DirectionalLight(0xffffff, 0.5);
@@ -84,6 +95,7 @@ export class WebXREngine {
         const material = new THREE.MeshBasicMaterial({ color: 0xffffff });
         this.reticle = new THREE.Mesh(geometry, material);
         this.reticle.matrixAutoUpdate = false;
+        this.reticle.matrix.identity();
         this.reticle.visible = false;
         this.scene.add(this.reticle);
 
@@ -92,24 +104,55 @@ export class WebXREngine {
         this.scene.add(this.wallpaperMesh);
     }
 
+    createWallpaperMesh() {
+        const geometry = new THREE.PlaneGeometry(this.wallpaperWidthMeters, this.wallpaperHeightMeters, 1, 1);
+        const textureLoader = new THREE.TextureLoader();
+        const texture = textureLoader.load(this.data.image_url, (tex) => {
+            if (this.data.tiling) {
+                tex.wrapS = THREE.RepeatWrapping;
+                tex.wrapT = THREE.RepeatWrapping;
+                tex.repeat.set(this.data.repeat_x, this.data.repeat_y);
+            }
+            if (tex.image && (tex.image.width > this.data.max_texture_resolution || tex.image.height > this.data.max_texture_resolution)) {
+                console.warn('Wallpaper texture exceeds configured max resolution.');
+            }
+        });
+
+        const material = new THREE.MeshStandardMaterial({
+            map: texture,
+            side: THREE.DoubleSide,
+            roughness: 0.82,
+            metalness: 0,
+            transparent: true,
+            alphaMap: this.depthTexture,
+            alphaTest: 0.45,
+        });
+
+        return new THREE.Mesh(geometry, material);
+    }
+
     setupRenderer() {
         this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
         this.renderer.setPixelRatio(window.devicePixelRatio);
         this.renderer.setSize(window.innerWidth, window.innerHeight);
         this.renderer.xr.enabled = true;
         this.renderer.outputEncoding = THREE.sRGBEncoding;
+
         this.container.appendChild(this.renderer.domElement);
         window.addEventListener('resize', this.onWindowResize.bind(this));
     }
 
     setupARButton() {
+
         const button = ARButton.createButton(this.renderer, {
             requiredFeatures: ['hit-test', 'dom-overlay'],
             optionalFeatures: ['plane-detection', 'anchors', 'mesh-detection', 'light-estimation', 'depth-sensing'],
             domOverlay: { root: this.container },
         });
         button.textContent = this.data.i18n.place;
+
         button.id = 'arwp-ar-button';
+        button.textContent = this.data.i18n.place;
         this.container.appendChild(button);
 
         this.renderer.xr.addEventListener('sessionstart', this.onSessionStart.bind(this));
@@ -218,7 +261,9 @@ export class WebXREngine {
     }
 
     onWindowResize() {
+
         if (!this.renderer) {
+
             return;
         }
         this.camera.aspect = window.innerWidth / window.innerHeight;
@@ -231,6 +276,7 @@ export class WebXREngine {
 
     async onSessionStart(event) {
         const session = event.target.getSession();
+
         this.depthManager = new DepthOcclusionManager(this.renderer, this.onStatus, this.data.i18n || {});
         await this.depthManager.configure(session);
 
@@ -262,6 +308,7 @@ export class WebXREngine {
 
         this.onStatus({ id: 'plane', label: this.data.i18n.status_searching, state: 'pending' });
         this.wallpaperMesh.material.uniforms.uResolution.value.set(this.renderer.domElement.width, this.renderer.domElement.height);
+
     }
 
     onSessionEnd() {
@@ -269,6 +316,7 @@ export class WebXREngine {
             this.hitTestSource.cancel();
             this.hitTestSource = null;
         }
+
         if (this.segmentationVideo?.srcObject) {
             const tracks = this.segmentationVideo.srcObject.getTracks();
             tracks.forEach((track) => track.stop());
@@ -454,6 +502,7 @@ export class WebXREngine {
 
     fitWidth() {
         if (!this.wallStats.width) {
+
             return;
         }
         const target = this.wallStats.width;
@@ -461,6 +510,7 @@ export class WebXREngine {
         this.currentScale = target / nativeWidth;
         this.wallpaperMesh.scale.setScalar(this.currentScale);
     }
+
 
     fitHeight() {
         if (!this.wallStats.height) {
@@ -540,6 +590,7 @@ export class WebXREngine {
         const estimate = frame.getLightEstimate?.(this.lightProbe);
         if (!estimate) {
             return;
+
         }
         const intensity = estimate?.primaryLightIntensity;
         if (intensity) {
@@ -555,5 +606,19 @@ export class WebXREngine {
             this.guidance.style.color = 'red';
         }
         this.onStatus({ id: 'engine', label: message, state: 'error' });
+    }
+
+    animate() {
+        this.renderer.setAnimationLoop((time, frame) => this.render(time, frame));
+    }
+
+    showStatus(message) {
+        const guidance = document.getElementById('arwp-guidance');
+        if (!guidance) {
+            return;
+        }
+
+        guidance.textContent = message || '';
+        guidance.style.display = message ? 'block' : 'none';
     }
 }
