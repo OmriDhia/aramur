@@ -104,7 +104,6 @@ class AR_Wallpaper_Preview {
                 'cameraBlocked'      => __( 'Camera access is blocked. Update your browser permissions to use the live preview.', 'ar-wallpaper-preview' ),
                 'cameraUnavailable'  => __( 'No compatible camera was found. Showing static preview.', 'ar-wallpaper-preview' ),
                 'fallbackPreview'    => __( 'Live camera preview is unavailable. Showing static background instead.', 'ar-wallpaper-preview' ),
-                'livePreviewReady'   => __( 'Camera preview ready.', 'ar-wallpaper-preview' ),
                 'snapshotReady'      => __( 'Snapshot ready! Long press or tap to save.', 'ar-wallpaper-preview' ),
                 'startWebXR'         => __( 'Start AR Session', 'ar-wallpaper-preview' ),
                 'fallbackTitle'      => __( 'Fallback Preview', 'ar-wallpaper-preview' ),

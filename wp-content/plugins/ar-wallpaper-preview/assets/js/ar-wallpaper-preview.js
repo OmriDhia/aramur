@@ -64,7 +64,6 @@ class ARWallpaperPreview {
             cameraBlocked: 'Camera access is blocked. Update your browser permissions to use the live preview.',
             cameraUnavailable: 'No compatible camera was found. Showing static preview.',
             fallbackPreview: 'Live camera preview is unavailable. Showing static background instead.',
-            livePreviewReady: 'Camera preview ready.',
         };
 
         const defaultValue = Object.prototype.hasOwnProperty.call(defaults, key) ? defaults[key] : fallback;
@@ -397,6 +396,7 @@ class ARWallpaperPreview {
             } catch (error) {
                 lastError = error;
             }
+
         }
 
         if (!this.stream) {
@@ -445,7 +445,41 @@ class ARWallpaperPreview {
         const unsupportedKeys = ['webxr-unsupported', 'webxr-status'];
         if (unsupportedKeys.includes(this.activeMessageKey)) {
             this.hideMessage();
+
         }
+
+        if (!this.stream) {
+            console.error('Unable to access camera', lastError);
+            if (lastError && (lastError.name === 'NotAllowedError' || lastError.name === 'SecurityError')) {
+                await this.useStaticFallback(this.getString('cameraBlocked'));
+            } else if (lastError && (lastError.name === 'NotFoundError' || lastError.name === 'OverconstrainedError')) {
+                await this.useStaticFallback(this.getString('cameraUnavailable'));
+            } else {
+                await this.useStaticFallback(this.getString('fallbackPreview'));
+            }
+            return;
+        }
+
+        this.video.srcObject = this.stream;
+
+        const playPromise = this.video.play();
+        if (playPromise && typeof playPromise.catch === 'function') {
+            playPromise.catch(() => {});
+        }
+
+        this.showPermission(false);
+        if (this.videoContainer) {
+            this.videoContainer.classList.remove('ar-wallpaper-modal__video-container--static');
+        }
+
+        this.video.addEventListener('loadedmetadata', () => {
+            if (!this.canvas) {
+                return;
+            }
+            this.canvas.width = this.video.videoWidth;
+            this.canvas.height = this.video.videoHeight;
+            this.videoAspect = this.video.videoWidth / Math.max(this.video.videoHeight, 1);
+        }, { once: true });
     }
 
     showPermission(state, message = '') {
