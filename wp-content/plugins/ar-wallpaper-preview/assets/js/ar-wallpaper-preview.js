@@ -64,7 +64,6 @@ class ARWallpaperPreview {
             cameraBlocked: 'Camera access is blocked. Update your browser permissions to use the live preview.',
             cameraUnavailable: 'No compatible camera was found. Showing static preview.',
             fallbackPreview: 'Live camera preview is unavailable. Showing static background instead.',
-            livePreviewReady: 'Camera preview ready.',
         };
 
         const defaultValue = Object.prototype.hasOwnProperty.call(defaults, key) ? defaults[key] : fallback;
@@ -226,6 +225,7 @@ class ARWallpaperPreview {
                     this.showMessage(this.getString('webxrNotSupported'), false, 'webxr-unsupported');
                 }
 
+
                 return this.startFallbackCamera();
             })
             .catch((error) => {
@@ -328,6 +328,7 @@ class ARWallpaperPreview {
         }
 
         if (!window.isSecureContext) {
+
             return this.useStaticFallback(this.getString('secureContext'));
         }
 
@@ -499,7 +500,114 @@ class ARWallpaperPreview {
         const unsupportedKeys = ['webxr-unsupported', 'webxr-status'];
         if (unsupportedKeys.includes(this.activeMessageKey)) {
             this.hideMessage();
+
         }
+
+        if (!hasShownPermissionMessage && permissionState !== 'granted') {
+            this.showPermission(true, this.getString('cameraPermission'));
+            hasShownPermissionMessage = true;
+        }
+
+        const constraintAttempts = [
+            { video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false },
+            { video: { facingMode: 'environment' }, audio: false },
+            { video: { facingMode: { ideal: 'user' } }, audio: false },
+            { video: true, audio: false },
+        ];
+
+        let lastError = null;
+
+        for (const constraints of constraintAttempts) {
+            try {
+                this.stream = await navigator.mediaDevices.getUserMedia(constraints);
+                break;
+            } catch (error) {
+                lastError = error;
+            }
+
+        }
+
+        if (!this.stream) {
+            console.error('Unable to access camera', lastError);
+            if (lastError && (lastError.name === 'NotAllowedError' || lastError.name === 'SecurityError')) {
+                await this.useStaticFallback(this.getString('cameraBlocked'));
+            } else if (lastError && (lastError.name === 'NotFoundError' || lastError.name === 'OverconstrainedError')) {
+                await this.useStaticFallback(this.getString('cameraUnavailable'));
+            } else {
+                await this.useStaticFallback(this.getString('fallbackPreview'));
+            }
+            return;
+        }
+
+        this.video.srcObject = this.stream;
+
+        const playPromise = this.video.play();
+        if (playPromise && typeof playPromise.catch === 'function') {
+            playPromise.catch(() => {});
+        }
+
+        this.clearUnsupportedWebXRMessage();
+        if (this.activeMessageKey !== 'webxr-ready') {
+            this.showMessage(this.getString('livePreviewReady'), false, 'live-preview');
+        }
+        this.showPermission(false);
+        if (this.videoContainer) {
+            this.videoContainer.classList.remove('ar-wallpaper-modal__video-container--static');
+        }
+
+        this.video.addEventListener('loadedmetadata', () => {
+            if (!this.canvas) {
+                return;
+            }
+            this.canvas.width = this.video.videoWidth;
+            this.canvas.height = this.video.videoHeight;
+            this.videoAspect = this.video.videoWidth / Math.max(this.video.videoHeight, 1);
+        }, { once: true });
+    }
+
+    clearUnsupportedWebXRMessage() {
+        if (!this.activeMessageKey) {
+            return;
+        }
+
+        const unsupportedKeys = ['webxr-unsupported', 'webxr-status'];
+        if (unsupportedKeys.includes(this.activeMessageKey)) {
+            this.hideMessage();
+
+        }
+
+        if (!this.stream) {
+            console.error('Unable to access camera', lastError);
+            if (lastError && (lastError.name === 'NotAllowedError' || lastError.name === 'SecurityError')) {
+                await this.useStaticFallback(this.getString('cameraBlocked'));
+            } else if (lastError && (lastError.name === 'NotFoundError' || lastError.name === 'OverconstrainedError')) {
+                await this.useStaticFallback(this.getString('cameraUnavailable'));
+            } else {
+                await this.useStaticFallback(this.getString('fallbackPreview'));
+            }
+            return;
+        }
+
+        this.video.srcObject = this.stream;
+
+        const playPromise = this.video.play();
+        if (playPromise && typeof playPromise.catch === 'function') {
+            playPromise.catch(() => {});
+        }
+
+        this.showPermission(false);
+        if (this.videoContainer) {
+            this.videoContainer.classList.remove('ar-wallpaper-modal__video-container--static');
+        }
+
+        this.video.addEventListener('loadedmetadata', () => {
+            if (!this.canvas) {
+                return;
+            }
+            this.canvas.width = this.video.videoWidth;
+            this.canvas.height = this.video.videoHeight;
+            this.videoAspect = this.video.videoWidth / Math.max(this.video.videoHeight, 1);
+        }, { once: true });
     }
 
     showPermission(state, message = '') {
@@ -536,6 +644,7 @@ class ARWallpaperPreview {
 
             this.showPermission(false);
         });
+
     }
 
     showMessage(message, sticky = false, key = '') {
@@ -563,6 +672,7 @@ class ARWallpaperPreview {
         this.activeMessageKey = '';
     }
 
+
     checkWebXRSupport() {
         if (!window.isSecureContext) {
             return Promise.resolve({
@@ -576,6 +686,7 @@ class ARWallpaperPreview {
                 supported: false,
                 message: this.getString('webxrNotSupported'),
             });
+
         }
 
         return Promise.resolve(navigator.xr.isSessionSupported('immersive-ar'))
@@ -721,6 +832,7 @@ class ARWallpaperPreview {
             });
         };
 
+
         return this.stopFallbackCamera()
             .then(() => Promise.resolve(import('https://cdn.jsdelivr.net/npm/three@0.155.0/build/three.module.js')))
             .then((THREE) => setupWebXR(THREE))
@@ -730,6 +842,7 @@ class ARWallpaperPreview {
                 this.cleanupWebXR();
                 return this.startFallbackCamera();
             });
+
     }
 
     updateWebXRScale() {
@@ -749,7 +862,9 @@ class ARWallpaperPreview {
         this.webxrWallpaperMesh.rotation.z = (this.rotation * Math.PI) / 180;
     }
 
+
     stopFallbackCamera() {
+
         if (this.video) {
             this.video.pause();
             this.video.srcObject = null;
