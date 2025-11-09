@@ -42,6 +42,7 @@ add_action( 'woocommerce_after_single_product_summary', function() {
 | `ar_wallpaper_preview_default_scale` | Initial wallpaper scale multiplier. | `1.2` |
 | `ar_wallpaper_preview_default_rotation` | Initial rotation (degrees). | `0` |
 | `ar_wallpaper_preview_overlay_opacity` | Wallpaper overlay opacity in fallback mode. | `0.92` |
+| `arwp_mediapipe_config` | Override MediaPipe Tasks module sources, wasm roots, and model URLs. | CDN defaults |
 
 Activate the plugin from the WordPress admin to start using the feature.
 

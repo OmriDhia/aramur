@@ -90,6 +90,7 @@ export class CanvasFallbackEngine {
             mode: this.data.occlusion_mode,
             dilation: 6,
             performanceMode: this.data.performance_mode,
+            moduleConfig: this.data.mediapipe,
         });
         try {
             await this.segmentation.load();

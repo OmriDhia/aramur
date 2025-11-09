@@ -292,6 +292,7 @@ export class WebXREngine {
             mode: this.data.occlusion_mode,
             dilation: 4,
             performanceMode: this.data.performance_mode,
+            moduleConfig: this.data.mediapipe,
         });
         try {
             await this.segmentation.load();

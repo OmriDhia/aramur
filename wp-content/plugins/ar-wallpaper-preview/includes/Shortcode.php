@@ -55,6 +55,40 @@ class ARWP_Shortcode {
                 $occlusion_mode = ! empty( $data['occlusion'] ) ? sanitize_text_field( $data['occlusion'] ) : ( isset( $settings['occlusion_mode'] ) ? $settings['occlusion_mode'] : 'depth' );
                 $performance_mode = ! empty( $data['performance'] ) ? sanitize_text_field( $data['performance'] ) : ( isset( $settings['performance_mode'] ) ? $settings['performance_mode'] : 'balanced' );
 
+                $mediapipe_defaults = array(
+                        'moduleSources'       => array(
+                                'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3',
+                                'https://unpkg.com/@mediapipe/tasks-vision@0.10.3?module',
+                        ),
+                        'wasmRoots'           => array(
+                                'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm',
+                                'https://unpkg.com/@mediapipe/tasks-vision@0.10.3/wasm',
+                        ),
+                        'segmenterModels'     => array(
+                                'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/1/selfie_segmenter.task',
+                        ),
+                        'objectDetectorModels' => array(
+                                'https://storage.googleapis.com/mediapipe-models/object_detector/lite-model/float16/1/lite-model.task',
+                        ),
+                );
+
+                $mediapipe_config = apply_filters( 'arwp_mediapipe_config', $mediapipe_defaults, $atts, $settings );
+                $mediapipe_config = wp_parse_args( is_array( $mediapipe_config ) ? $mediapipe_config : array(), $mediapipe_defaults );
+
+                $sanitize_url_array = static function( $urls ) {
+                        if ( ! is_array( $urls ) ) {
+                                $urls = array();
+                        }
+                        return array_values( array_filter( array_map( 'esc_url_raw', $urls ) ) );
+                };
+
+                $mediapipe_config = array(
+                        'moduleSources'        => $sanitize_url_array( $mediapipe_config['moduleSources'] ),
+                        'wasmRoots'            => $sanitize_url_array( $mediapipe_config['wasmRoots'] ),
+                        'segmenterModels'      => $sanitize_url_array( $mediapipe_config['segmenterModels'] ),
+                        'objectDetectorModels' => $sanitize_url_array( $mediapipe_config['objectDetectorModels'] ),
+                );
+
                 wp_localize_script( 'arwp-entry', 'arwpData', array(
                         'image_url'    => esc_url_raw( $data['image'] ),
                         'width_cm'     => floatval( $data['width_cm'] ?: $settings['default_width_cm'] ),
@@ -70,6 +104,7 @@ class ARWP_Shortcode {
                         'auto_wall_fit'=> filter_var( $auto_wall_fit, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE ) ?? ( 'yes' === $auto_wall_fit ),
                         'occlusion_mode' => $occlusion_mode,
                         'performance_mode' => $performance_mode,
+                        'mediapipe'     => $mediapipe_config,
                         'i18n' => array(
                                 'unsupported_device' => __( 'Your device does not support the required AR features.', 'ar-wallpaper-preview' ),
                                 'guidance_overlay'   => __( 'Point your camera at a wall and slowly move your phone to detect a surface.', 'ar-wallpaper-preview' ),

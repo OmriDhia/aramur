@@ -1,24 +1,15 @@
 import { ObjectDetectHelper } from './object-detect.js';
+import { configureVisionSources, loadVisionFileset, loadVisionModule } from './vision-loader.js';
 
-const SEGMENTATION_MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float32/latest/selfie_segmenter.tflite';
-const VISION_WASM_ROOT = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm';
-
-let visionFilesetPromise = null;
-
-async function loadVisionFileset() {
-    if (!visionFilesetPromise) {
-        visionFilesetPromise = import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3').then(({ FilesetResolver }) =>
-            FilesetResolver.forVisionTasks(VISION_WASM_ROOT)
-        );
-    }
-    return visionFilesetPromise;
-}
+const DEFAULT_SEGMENTATION_MODELS = [
+    'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/1/selfie_segmenter.task',
+];
 
 /**
  * Segmentation fallback used when depth occlusion is not available.
  */
 export class SegmentationFallback {
-    constructor({ mode = 'segmentation', dilation = 4, performanceMode = 'balanced' } = {}) {
+    constructor({ mode = 'segmentation', dilation = 4, performanceMode = 'balanced', moduleConfig = {} } = {}) {
         this.mode = mode;
         this.dilation = dilation;
         this.performanceMode = performanceMode;
@@ -26,22 +17,45 @@ export class SegmentationFallback {
         this.maskCanvas = document.createElement('canvas');
         this.maskCtx = this.maskCanvas.getContext('2d');
         this.objectHelper = null;
+        const globalConfig = typeof window !== 'undefined' && window.arwpData ? window.arwpData.mediapipe : null;
+        this.moduleConfig = moduleConfig && Object.keys(moduleConfig).length ? moduleConfig : (globalConfig || {});
+        this.modelUrls = Array.isArray(this.moduleConfig?.segmenterModels) && this.moduleConfig.segmenterModels.length
+            ? this.moduleConfig.segmenterModels
+            : DEFAULT_SEGMENTATION_MODELS;
+        configureVisionSources(this.moduleConfig);
     }
 
     async load() {
         const vision = await loadVisionFileset();
-        const { ImageSegmenter } = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3');
-        this.segmenter = await ImageSegmenter.createFromOptions(vision, {
-            baseOptions: {
-                modelAssetPath: SEGMENTATION_MODEL_URL,
-            },
-            outputCategoryMask: true,
-            runningMode: 'VIDEO',
-        });
+        const { ImageSegmenter } = await loadVisionModule();
+        this.segmenter = await this.createSegmenter(ImageSegmenter, vision);
         if (this.mode === 'objects') {
-            this.objectHelper = new ObjectDetectHelper();
+            this.objectHelper = new ObjectDetectHelper({ moduleConfig: this.moduleConfig });
             await this.objectHelper.load();
         }
+    }
+
+    async createSegmenter(ImageSegmenter, vision) {
+        let lastError = null;
+        for (const url of this.modelUrls) {
+            if (!url) {
+                continue;
+            }
+            try {
+                // eslint-disable-next-line no-await-in-loop
+                return await ImageSegmenter.createFromOptions(vision, {
+                    baseOptions: {
+                        modelAssetPath: url,
+                    },
+                    outputCategoryMask: true,
+                    runningMode: 'VIDEO',
+                });
+            } catch (error) {
+                console.warn('AR Wallpaper Preview: failed to load segmentation model', url, error);
+                lastError = error;
+            }
+        }
+        throw lastError || new Error('Unable to load segmentation model');
     }
 
     async estimate(video, width, height, targetCanvas, targetCtx) {
