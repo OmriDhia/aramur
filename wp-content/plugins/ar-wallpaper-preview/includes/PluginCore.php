@@ -85,14 +85,17 @@ class ARWP_PluginCore {
 	 */
 	public static function activate() {
 		// Set default options on activation.
-		$default_options = array(
-			'default_width_cm'  => 300,
-			'default_height_cm' => 250,
-			'enable_tiling'     => 'yes',
-			'ar_engine_priority' => 'webxr,arjs,canvas_fallback',
-			'default_marker_url' => '',
-			'max_texture_resolution' => 2048, // Max texture size in pixels (e.g., 2048x2048)
-		);
+                $default_options = array(
+                        'default_width_cm'      => 300,
+                        'default_height_cm'     => 250,
+                        'enable_tiling'         => 'yes',
+                        'ar_engine_priority'    => 'webxr,arjs,canvas_fallback',
+                        'default_marker_url'    => '',
+                        'max_texture_resolution' => 2048, // Max texture size in pixels (e.g., 2048x2048)
+                        'auto_wall_fit'         => 'yes',
+                        'occlusion_mode'        => 'depth',
+                        'performance_mode'      => 'balanced',
+                );
 		add_option( 'arwp_settings', $default_options );
 	}
 

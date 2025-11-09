@@ -107,19 +107,64 @@ class ARWP_Admin {
 		);
 
 		// Max Texture Resolution
-		add_settings_field(
-			'max_texture_resolution',
-			__( 'Max Texture Resolution (px)', 'ar-wallpaper-preview' ),
-			array( $this, 'text_input_callback' ),
-			'ar-wallpaper-preview',
+                add_settings_field(
+                        'max_texture_resolution',
+                        __( 'Max Texture Resolution (px)', 'ar-wallpaper-preview' ),
+                        array( $this, 'text_input_callback' ),
+                        'ar-wallpaper-preview',
 			'arwp_main_section',
 			array(
 				'id'    => 'max_texture_resolution',
 				'label' => __( 'Maximum texture size (e.g., 2048) to prevent memory issues on mobile devices.', 'ar-wallpaper-preview' ),
-				'type'  => 'number',
-			)
-		);
-	}
+                                'type'  => 'number',
+                        )
+                );
+
+                add_settings_field(
+                        'auto_wall_fit',
+                        __( 'Enable Auto Wall Fit', 'ar-wallpaper-preview' ),
+                        array( $this, 'checkbox_callback' ),
+                        'ar-wallpaper-preview',
+                        'arwp_main_section',
+                        array(
+                                'id'    => 'auto_wall_fit',
+                                'label' => __( 'Automatically detect and snap to vertical walls when an AR session starts.', 'ar-wallpaper-preview' ),
+                        )
+                );
+
+                add_settings_field(
+                        'occlusion_mode',
+                        __( 'Occlusion Strategy', 'ar-wallpaper-preview' ),
+                        array( $this, 'select_callback' ),
+                        'ar-wallpaper-preview',
+                        'arwp_main_section',
+                        array(
+                                'id'      => 'occlusion_mode',
+                                'options' => array(
+                                        'depth'        => __( 'Depth ▸ Segmentation fallback', 'ar-wallpaper-preview' ),
+                                        'segmentation' => __( 'Segmentation only', 'ar-wallpaper-preview' ),
+                                        'objects'      => __( 'Segmentation + object masking', 'ar-wallpaper-preview' ),
+                                        'off'          => __( 'Disabled', 'ar-wallpaper-preview' ),
+                                ),
+                        )
+                );
+
+                add_settings_field(
+                        'performance_mode',
+                        __( 'Performance Mode', 'ar-wallpaper-preview' ),
+                        array( $this, 'select_callback' ),
+                        'ar-wallpaper-preview',
+                        'arwp_main_section',
+                        array(
+                                'id'      => 'performance_mode',
+                                'options' => array(
+                                        'balanced' => __( 'Balanced', 'ar-wallpaper-preview' ),
+                                        'battery'  => __( 'Battery Saver', 'ar-wallpaper-preview' ),
+                                        'quality'  => __( 'Quality', 'ar-wallpaper-preview' ),
+                                ),
+                        )
+                );
+        }
 
 	/**
 	 * Settings section callback.
@@ -156,21 +201,39 @@ class ARWP_Admin {
 	 *
 	 * @param array $args Field arguments.
 	 */
-	public function checkbox_callback( $args ) {
-		$options = get_option( 'arwp_settings' );
-		$id      = $args['id'];
-		$checked = isset( $options[ $id ] ) && 'yes' === $options[ $id ];
+        public function checkbox_callback( $args ) {
+                $options = get_option( 'arwp_settings' );
+                $id      = $args['id'];
+                $checked = isset( $options[ $id ] ) && 'yes' === $options[ $id ];
 
-		printf(
-			'<input type="checkbox" id="%1$s" name="arwp_settings[%1$s]" value="yes" %2$s />',
-			esc_attr( $id ),
-			checked( $checked, true, false )
-		);
+                printf(
+                        '<input type="checkbox" id="%1$s" name="arwp_settings[%1$s]" value="yes" %2$s />',
+                        esc_attr( $id ),
+                        checked( $checked, true, false )
+                );
 
-		if ( isset( $args['label'] ) ) {
-			printf( '<label for="%1$s">%2$s</label>', esc_html( $args['label'] ) );
-		}
-	}
+                if ( isset( $args['label'] ) ) {
+                        printf( '<label for="%1$s">%2$s</label>', esc_html( $args['label'] ) );
+                }
+        }
+
+        /**
+         * Select field callback.
+         *
+         * @param array $args Field arguments.
+         */
+        public function select_callback( $args ) {
+                $options = get_option( 'arwp_settings' );
+                $id      = $args['id'];
+                $value   = isset( $options[ $id ] ) ? $options[ $id ] : '';
+                $choices = isset( $args['options'] ) ? $args['options'] : array();
+
+                printf( '<select id="%1$s" name="arwp_settings[%1$s]">', esc_attr( $id ) );
+                foreach ( $choices as $key => $label ) {
+                        printf( '<option value="%1$s" %2$s>%3$s</option>', esc_attr( $key ), selected( $value, $key, false ), esc_html( $label ) );
+                }
+                echo '</select>';
+        }
 
 	/**
 	 * Validate settings.
@@ -200,14 +263,27 @@ class ARWP_Admin {
 			$output['ar_engine_priority'] = 'webxr,arjs,canvas_fallback'; // Fallback to default
 		}
 
-		// Validate default_marker_url
-		$output['default_marker_url'] = isset( $input['default_marker_url'] ) ? esc_url_raw( $input['default_marker_url'] ) : '';
+                // Validate default_marker_url
+                $output['default_marker_url'] = isset( $input['default_marker_url'] ) ? esc_url_raw( $input['default_marker_url'] ) : '';
 
-		// Validate max_texture_resolution
-		$output['max_texture_resolution'] = isset( $input['max_texture_resolution'] ) ? absint( $input['max_texture_resolution'] ) : 2048;
+                // Validate max_texture_resolution
+                $output['max_texture_resolution'] = isset( $input['max_texture_resolution'] ) ? absint( $input['max_texture_resolution'] ) : 2048;
 
-		return $output;
-	}
+                // Auto wall fit toggle.
+                $output['auto_wall_fit'] = isset( $input['auto_wall_fit'] ) ? 'yes' : 'no';
+
+                // Occlusion mode selection.
+                $valid_modes             = array( 'depth', 'segmentation', 'objects', 'off' );
+                $selected_mode           = isset( $input['occlusion_mode'] ) ? sanitize_text_field( $input['occlusion_mode'] ) : 'depth';
+                $output['occlusion_mode'] = in_array( $selected_mode, $valid_modes, true ) ? $selected_mode : 'depth';
+
+                // Performance mode selection.
+                $valid_perf              = array( 'balanced', 'battery', 'quality' );
+                $selected_perf           = isset( $input['performance_mode'] ) ? sanitize_text_field( $input['performance_mode'] ) : 'balanced';
+                $output['performance_mode'] = in_array( $selected_perf, $valid_perf, true ) ? $selected_perf : 'balanced';
+
+                return $output;
+        }
 
 	/**
 	 * Options page display.
