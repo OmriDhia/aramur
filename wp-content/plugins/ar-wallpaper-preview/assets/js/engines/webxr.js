@@ -544,17 +544,20 @@ export class WebXREngine {
     }
 
     updateDepth(frame, referenceSpace) {
-        if (!this.depthManager) {
+        if (!this.depthManager || !this.wallpaperMesh?.material) {
             return;
         }
         const depth = this.depthManager.update(frame, referenceSpace);
         if (!depth) {
+            this.wallpaperMesh.material.uniforms.uDepthEnabled.value = 0;
             return;
         }
-        this.wallpaperMesh.material.uniforms.uDepthTexture.value = depth.texture;
-        this.wallpaperMesh.material.uniforms.uDepthEnabled.value = 1;
-        this.wallpaperMesh.material.uniforms.uResolution.value.set(this.renderer.domElement.width, this.renderer.domElement.height);
-        this.wallpaperMesh.material.uniforms.uDepthScale.value = depth.meterScale;
+        const { uniforms } = this.wallpaperMesh.material;
+        uniforms.uDepthTexture.value = depth.texture;
+        uniforms.uDepthEnabled.value = 1;
+        uniforms.uResolution.value.set(this.renderer.domElement.width, this.renderer.domElement.height);
+        uniforms.uDepthScale.value = depth.meterScale;
+        uniforms.uDepthIsFloat.value = depth.isFloat ? 1 : 0;
         this.onStatus({ id: 'occlusion', label: this.data.i18n.status_depth, state: 'success' });
     }
 

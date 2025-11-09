@@ -9,6 +9,7 @@ export class DepthOcclusionManager {
         this.onStatus = statusCallback;
         this.depthTexture = null;
         this.supported = false;
+        this.isFloatFormat = false;
         this.strings = strings;
     }
 
@@ -31,6 +32,8 @@ export class DepthOcclusionManager {
         } catch (error) {
             console.warn('AR Wallpaper Preview: depth configuration failed', error);
             this.supported = false;
+            const fallbackLabel = this.strings.status_depth_unavailable || this.strings.status_segmentation || 'Using segmentation';
+            this.onStatus({ id: 'occlusion', label: fallbackLabel, state: 'warning' });
             return false;
         }
     }
@@ -50,21 +53,61 @@ export class DepthOcclusionManager {
         }
 
         const { width, height, data } = depthData;
-        const buffer = data instanceof Uint8Array ? data : new Uint8Array(data.buffer);
-        if (!this.depthTexture || this.depthTexture.image.width !== width || this.depthTexture.image.height !== height) {
-            this.depthTexture = new THREE.DataTexture(new Uint8Array(buffer), width, height, THREE.LuminanceAlphaFormat);
-            this.depthTexture.needsUpdate = true;
+
+        let textureNeedsRebuild = !this.depthTexture
+            || this.depthTexture.image.width !== width
+            || this.depthTexture.image.height !== height;
+
+        let textureData = null;
+        let textureFormat = THREE.LuminanceAlphaFormat;
+        let textureType = THREE.UnsignedByteType;
+
+        if (data instanceof Float32Array) {
+            textureData = data;
+            textureFormat = THREE.RedFormat;
+            textureType = THREE.FloatType;
+            this.isFloatFormat = true;
+        } else if (data instanceof Uint8Array) {
+            textureData = data;
+            this.isFloatFormat = false;
+        } else if (data instanceof Uint16Array) {
+            textureData = new Uint8Array(data.buffer);
+            this.isFloatFormat = false;
         } else {
-            this.depthTexture.image.data.set(buffer);
-            this.depthTexture.needsUpdate = true;
+            textureData = new Uint8Array(data.buffer);
+            this.isFloatFormat = false;
         }
+
+        if (this.depthTexture && (this.depthTexture.format !== textureFormat || this.depthTexture.type !== textureType)) {
+            textureNeedsRebuild = true;
+        }
+
+        if (textureNeedsRebuild) {
+            this.depthTexture = new THREE.DataTexture(textureData, width, height, textureFormat, textureType);
+            this.depthTexture.minFilter = THREE.NearestFilter;
+            this.depthTexture.magFilter = THREE.NearestFilter;
+            this.depthTexture.generateMipmaps = false;
+            this.depthTexture.flipY = false;
+            if (textureFormat === THREE.RedFormat && textureType === THREE.FloatType) {
+                this.depthTexture.internalFormat = 'R32F';
+            }
+        } else if (textureData !== this.depthTexture.image.data) {
+            this.depthTexture.image.data.set(textureData);
+        }
+
+        this.depthTexture.needsUpdate = true;
+
+        const meterScale = typeof depthData.rawValueToMeters === 'number'
+            ? depthData.rawValueToMeters
+            : (this.isFloatFormat ? 1.0 : 0.001);
 
         return {
             texture: this.depthTexture,
             width,
             height,
             raw: depthData,
-            meterScale: 0.001,
+            meterScale,
+            isFloat: this.isFloatFormat,
         };
     }
 }

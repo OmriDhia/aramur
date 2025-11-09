@@ -9,6 +9,7 @@ export function createWallpaperMaterial(texture) {
             uDepthEnabled: { value: 0 },
             uSegmentationEnabled: { value: 0 },
             uDepthScale: { value: 0.001 },
+            uDepthIsFloat: { value: 0 },
             uResolution: { value: new THREE.Vector2(1, 1) },
             uCameraNear: { value: 0.01 },
             uCameraFar: { value: 20.0 },
@@ -31,6 +32,7 @@ export function createWallpaperMaterial(texture) {
             uniform sampler2D uSegmentationTexture;
             uniform int uDepthEnabled;
             uniform int uSegmentationEnabled;
+            uniform int uDepthIsFloat;
             uniform vec2 uResolution;
             uniform float uDepthScale;
             uniform float uCameraNear;
@@ -56,8 +58,16 @@ export function createWallpaperMaterial(texture) {
                 }
 
                 if (uDepthEnabled == 1) {
-                    vec2 depthSample = texture2D(uDepthTexture, depthUv).ra;
-                    float realDepth = (depthSample.x + depthSample.y / 255.0) * uDepthScale;
+                    float realDepth;
+                    if (uDepthIsFloat == 1) {
+                        realDepth = texture2D(uDepthTexture, depthUv).r * uDepthScale;
+                    } else {
+                        vec2 depthSample = texture2D(uDepthTexture, depthUv).ra;
+                        float high = depthSample.x * 255.0;
+                        float low = depthSample.y * 255.0;
+                        float depthMm = high + low * 256.0;
+                        realDepth = depthMm * uDepthScale;
+                    }
                     float virtualDepth = linearizeDepth(gl_FragCoord.z);
                     if (realDepth > 0.0 && realDepth < virtualDepth) {
                         discard;
