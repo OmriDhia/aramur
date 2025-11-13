@@ -143,6 +143,16 @@
     width: 100%;
     height: 100%;
     object-fit: cover;
+    z-index: 0; /* ensure video is below the wallpaper element */
+}
+
+.ar-wallpaper-modal__canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 0; /* canvas should sit with the video */
 }
 
 .ar-wallpaper-modal__video-container--static {
@@ -157,14 +167,6 @@
     pointer-events: none;
 }
 
-.ar-wallpaper-modal__canvas {
-    position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-    pointer-events: none;
-}
-
 .ar-wallpaper-modal__wallpaper {
     position: absolute;
     inset: 0;
@@ -176,10 +178,17 @@
     transition: opacity 0.25s ease-in-out;
     pointer-events: auto;
     cursor: grab;
+    z-index: 1; /* wallpaper sits above the video so mask can reveal the video beneath */
+
+    /* Explicit mask settings so the generated PNG mask scales and aligns predictably across browsers */
     -webkit-mask-repeat: no-repeat;
-    -webkit-mask-size: cover;
     mask-repeat: no-repeat;
-    mask-size: cover;
+    -webkit-mask-position: center;
+    mask-position: center;
+    -webkit-mask-size: 100% 100%;
+    mask-size: 100% 100%;
+    -webkit-mask-mode: alpha;
+    mask-mode: alpha;
 }
 
 .ar-wallpaper-modal__wallpaper.is-visible {
@@ -284,7 +293,7 @@
     padding: 0.5rem 1rem;
     border-radius: 999px;
     font-size: 0.8rem;
-    z-index: 10;
+    z-index: 3;
     display: none;
 }
 
@@ -303,6 +312,7 @@
     color: rgba(255, 255, 255, 0.92);
     padding: 1.5rem;
     font-size: 0.95rem;
+    z-index: 2; /* ensure permission overlays sit above wallpaper */
 }
 
 .ar-wallpaper-modal__webxr-container {

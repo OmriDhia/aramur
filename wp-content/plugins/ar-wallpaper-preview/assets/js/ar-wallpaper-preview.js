@@ -59,6 +59,23 @@ class ARWallpaperPreview {
         this.analysisCanvas = document.createElement('canvas');
         this.analysisCtx = this.analysisCanvas.getContext('2d');
         this.maskDataUrl = '';
+        this.prevBackgroundSize = '';
+        this.compositeActive = false;
+        this.compositeHandle = null;
+
+        // debug overlay (visible if URL contains ?ar_debug=1)
+        this.debugMode = window.location.search && window.location.search.indexOf('ar_debug=1') !== -1;
+        if (this.debugMode && this.videoContainer) {
+            // style the analysis canvas so it overlays the video for debugging
+            this.analysisCanvas.style.position = 'absolute';
+            this.analysisCanvas.style.inset = '0';
+            this.analysisCanvas.style.width = '100%';
+            this.analysisCanvas.style.height = '100%';
+            this.analysisCanvas.style.pointerEvents = 'none';
+            this.analysisCanvas.style.opacity = '0.65';
+            this.analysisCanvas.style.zIndex = '4';
+            this.videoContainer.appendChild(this.analysisCanvas);
+        }
 
         this.configureVideoElement();
         this.bindEvents();
@@ -299,7 +316,7 @@ class ARWallpaperPreview {
             return;
         }
 
-        const transform = `translate(-50%, -50%) translate(${this.offset.x}px, ${this.offset.y}px) rotate(${this.rotation}deg) scale(${this.scale})`;
+        const transform = `translate(0%, 0%) translate(${this.offset.x}px, ${this.offset.y}px) rotate(${this.rotation}deg) scale(${this.scale})`;
         this.wallpaper.style.transform = transform;
     }
 
@@ -501,6 +518,8 @@ class ARWallpaperPreview {
                     this.canvas.height = this.video.videoHeight;
                     this.videoAspect = this.video.videoWidth / Math.max(this.video.videoHeight, 1);
                     this.startObjectDetection();
+                    // start compositing preview onto the overlay canvas so occlusion is pixel-accurate
+                    this.startCompositeLoop();
                 }, { once: true });
 
                 return null;
@@ -799,6 +818,7 @@ class ARWallpaperPreview {
 
         this.stream = null;
         this.stopObjectDetection();
+        this.stopCompositeLoop();
 
         return Promise.resolve();
     }
@@ -958,6 +978,119 @@ class ARWallpaperPreview {
         }
     }
 
+    // Composite loop: draw video then wallpaper to the overlay canvas, then clear occluder rects to let video/foreground show in front
+    startCompositeLoop() {
+        if (!this.canvas || !this.ctx || this.compositeActive) {
+            return;
+        }
+
+        // save current display/z-index values so we can restore them later
+        try {
+            this._prevWallpaperDisplay = this.wallpaper ? this.wallpaper.style.display : '';
+            this._prevCanvasZ = this.canvas ? this.canvas.style.zIndex : '';
+        } catch (e) {
+            this._prevWallpaperDisplay = '';
+            this._prevCanvasZ = '';
+        }
+
+        // hide the DOM wallpaper element while the composite canvas is shown
+        if (this.wallpaper) {
+            this.wallpaper.style.display = 'none';
+            this.wallpaper.style.pointerEvents = 'none';
+        }
+
+        // bring the canvas to the front so the composite rendering is visible above video
+        if (this.canvas) {
+            this.canvas.style.zIndex = '2';
+        }
+
+        this.compositeActive = true;
+
+        const loop = () => {
+            if (!this.compositeActive) {
+                return;
+            }
+
+            try {
+                const width = this.canvas.width = this.video && this.video.videoWidth ? this.video.videoWidth : this.videoContainer.clientWidth || 640;
+                const height = this.canvas.height = this.video && this.video.videoHeight ? this.video.videoHeight : this.videoContainer.clientHeight || 480;
+
+                // draw camera frame as background
+                if (this.stream && this.video) {
+                    this.ctx.clearRect(0, 0, width, height);
+                    this.ctx.drawImage(this.video, 0, 0, width, height);
+                } else {
+                    // static fallback background
+                    this.ctx.fillStyle = '#0f172a';
+                    this.ctx.fillRect(0, 0, width, height);
+                }
+
+                // draw wallpaper image using same transform logic as snapshot
+                if (this.image) {
+                    const aspect = this.image.naturalWidth / Math.max(this.image.naturalHeight, 1);
+                    const baseWidth = width * 0.65;
+                    const wallpaperWidth = baseWidth * this.scale;
+                    const wallpaperHeight = wallpaperWidth / aspect;
+
+                    const offsetX = this.offset.x * (width / (this.videoContainer.clientWidth || width));
+                    const offsetY = this.offset.y * (height / (this.videoContainer.clientHeight || height));
+
+                    this.ctx.save();
+                    this.ctx.translate(width / 2 + offsetX, height / 2 + offsetY);
+                    this.ctx.rotate((this.rotation * Math.PI) / 180);
+                    this.ctx.drawImage(this.image, -wallpaperWidth / 2, -wallpaperHeight / 2, wallpaperWidth, wallpaperHeight);
+                    this.ctx.restore();
+
+                    // apply occluder clear rects so detected objects appear in front
+                    if (Array.isArray(this.latestDetections) && this.latestDetections.length) {
+                        const scaleX = width / (this.videoContainer.clientWidth || width);
+                        const scaleY = height / (this.videoContainer.clientHeight || height);
+                        const expand = Math.max(2, Math.round(Math.min(width, height) * 0.01));
+
+                        this.latestDetections.forEach((box) => {
+                            const x = Math.max(0, Math.round(box.x * scaleX) - expand);
+                            const y = Math.max(0, Math.round(box.y * scaleY) - expand);
+                            const w = Math.min(width - x, Math.round(box.width * scaleX) + expand * 2);
+                            const h = Math.min(height - y, Math.round(box.height * scaleY) + expand * 2);
+                            // clear the wallpaper pixels in the occluder rect so the underlying camera image shows
+                            this.ctx.clearRect(x, y, w, h);
+                        });
+                    }
+                }
+            } catch (err) {
+                console.error('AR Wallpaper Preview: composite loop error', err);
+            }
+
+            this.compositeHandle = window.requestAnimationFrame(loop);
+        };
+
+        this.compositeHandle = window.requestAnimationFrame(loop);
+    }
+
+    stopCompositeLoop() {
+        if (!this.compositeActive) {
+            return;
+        }
+        this.compositeActive = false;
+        if (this.compositeHandle) {
+            window.cancelAnimationFrame(this.compositeHandle);
+            this.compositeHandle = null;
+        }
+
+        // restore wallpaper element and canvas z-index
+        try {
+            if (this.wallpaper) {
+                this.wallpaper.style.display = this._prevWallpaperDisplay || '';
+                this.wallpaper.style.pointerEvents = '';
+            }
+            if (this.canvas) {
+                this.canvas.style.zIndex = this._prevCanvasZ || '';
+            }
+        } catch (e) {
+            // ignore
+        }
+    }
+
     resetMask() {
         if (!this.wallpaper) {
             return;
@@ -966,6 +1099,15 @@ class ARWallpaperPreview {
         this.wallpaper.style.removeProperty('mask-image');
         this.wallpaper.style.removeProperty('-webkit-mask-image');
         this.wallpaper.style.removeProperty('--ar-wallpaper-mask');
+        // restore previous background-size if we changed it
+        if (this.prevBackgroundSize) {
+            try {
+                this.wallpaper.style.backgroundSize = this.prevBackgroundSize;
+            } catch (e) {
+                // ignore
+            }
+            this.prevBackgroundSize = '';
+        }
         this.maskDataUrl = '';
         this.latestDetections = [];
     }
@@ -1030,8 +1172,11 @@ class ARWallpaperPreview {
             return this.detectionModelPromise;
         }
 
+        console.debug('AR Wallpaper Preview: ensureDetectionModel() - starting model load');
+
         const loadScript = (src) => new Promise((resolve, reject) => {
             if ((src.includes('tf.min.js') && window.tf) || (src.includes('coco-ssd') && window.cocoSsd)) {
+                console.debug('AR Wallpaper Preview: script already present', src);
                 resolve();
                 return;
             }
@@ -1053,9 +1198,13 @@ class ARWallpaperPreview {
             script.defer = true;
             script.addEventListener('load', () => {
                 script.dataset.loaded = 'true';
+                console.debug('AR Wallpaper Preview: script loaded', src);
                 resolve();
             });
-            script.addEventListener('error', (event) => reject(event.error || new Error(`Failed to load script: ${src}`)));
+            script.addEventListener('error', (event) => {
+                console.error('AR Wallpaper Preview: script load error', src, event && event.error ? event.error : event);
+                reject(event.error || new Error(`Failed to load script: ${src}`));
+            });
             document.head.appendChild(script);
         });
 
@@ -1065,9 +1214,11 @@ class ARWallpaperPreview {
                 if (!window.cocoSsd || !window.cocoSsd.load) {
                     throw new Error('coco-ssd loader not available');
                 }
+                console.debug('AR Wallpaper Preview: loading coco-ssd model');
                 return window.cocoSsd.load();
             })
             .then((model) => {
+                console.debug('AR Wallpaper Preview: coco-ssd model loaded');
                 this.detectionModel = model;
                 return model;
             })
@@ -1087,6 +1238,7 @@ class ARWallpaperPreview {
 
         this.detectionActive = true;
         this.showMessage(this.getString('occlusionCalibrating'), false, 'occlusion');
+        console.debug('AR Wallpaper Preview: starting object detection');
         this.runDetectionLoop();
     }
 
@@ -1099,6 +1251,7 @@ class ARWallpaperPreview {
         if (this.activeMessageKey === 'occlusion') {
             this.hideMessage();
         }
+        console.debug('AR Wallpaper Preview: stopped object detection');
     }
 
     runDetectionLoop() {
@@ -1111,18 +1264,23 @@ class ARWallpaperPreview {
             return;
         }
 
+        console.debug('AR Wallpaper Preview: running detection iteration');
+
         this.ensureDetectionModel()
             .then((model) => {
                 if (!model || !this.detectionActive) {
+                    console.debug('AR Wallpaper Preview: detection model not available or detection stopped');
                     return null;
                 }
 
                 return model.detect(this.video).then((predictions) => {
+                    console.debug('AR Wallpaper Preview: detection predictions', predictions && predictions.length ? predictions.length : 0);
                     if (!Array.isArray(predictions)) {
                         return;
                     }
 
                     this.latestDetections = this.normalizeDetections(predictions);
+                    console.debug('AR Wallpaper Preview: normalized detections', this.latestDetections);
                     this.applyOcclusionMask();
                     if (this.activeMessageKey === 'occlusion') {
                         this.hideMessage();
@@ -1132,6 +1290,8 @@ class ARWallpaperPreview {
                     } else {
                         this.fitWallpaperToWall(true);
                     }
+                }).catch((err) => {
+                    console.error('AR Wallpaper Preview: detection model failed during detect()', err);
                 });
             })
             .finally(() => {
@@ -1146,7 +1306,8 @@ class ARWallpaperPreview {
             return [];
         }
 
-        const occlusionLabels = ['person', 'chair', 'sofa', 'bed', 'tv', 'dining table', 'potted plant', 'cat', 'dog'];
+        // broaden occluder labels and relax detection threshold slightly
+        const occlusionLabels = ['person', 'chair', 'sofa', 'bed', 'tv', 'dining table', 'potted plant', 'cat', 'dog', 'couch'];
         const containerWidth = this.videoContainer.clientWidth || 1;
         const containerHeight = this.videoContainer.clientHeight || 1;
         const videoWidth = this.video && this.video.videoWidth ? this.video.videoWidth : containerWidth;
@@ -1154,8 +1315,11 @@ class ARWallpaperPreview {
         const scaleX = containerWidth / Math.max(videoWidth, 1);
         const scaleY = containerHeight / Math.max(videoHeight, 1);
 
+        // lower score threshold to 0.35 to catch more occluders in challenging lighting/angles
+        const SCORE_THRESHOLD = 0.35;
+
         return predictions
-            .filter((prediction) => occlusionLabels.includes(prediction.class) && prediction.score >= 0.45)
+            .filter((prediction) => occlusionLabels.includes(prediction.class) && prediction.score >= SCORE_THRESHOLD)
             .map((prediction) => {
                 const [x, y, width, height] = prediction.bbox;
                 return {
@@ -1169,6 +1333,7 @@ class ARWallpaperPreview {
 
     applyOcclusionMask() {
         if (!this.wallpaper || !this.analysisCtx || !this.latestDetections.length) {
+            console.debug('AR Wallpaper Preview: applyOcclusionMask skipped (no wallpaper, analysis context, or detections)', { wallpaper: !!this.wallpaper, analysisCtx: !!this.analysisCtx, detections: this.latestDetections.length });
             return;
         }
 
@@ -1176,6 +1341,7 @@ class ARWallpaperPreview {
         const videoHeight = this.video && this.video.videoHeight ? this.video.videoHeight : this.videoContainer.clientHeight || 480;
 
         if (!videoWidth || !videoHeight) {
+            console.debug('AR Wallpaper Preview: applyOcclusionMask aborted due to invalid video dimensions', { videoWidth, videoHeight });
             return;
         }
 
@@ -1183,24 +1349,71 @@ class ARWallpaperPreview {
         this.analysisCanvas.height = videoHeight;
 
         const ctx = this.analysisCtx;
-        ctx.fillStyle = '#ffffff';
+        // Fill the mask fully opaque initially (opaque areas will show the wallpaper)
+        ctx.clearRect(0, 0, videoWidth, videoHeight);
+        ctx.fillStyle = 'rgba(255,255,255,1)';
         ctx.fillRect(0, 0, videoWidth, videoHeight);
-        ctx.fillStyle = '#000000';
 
+        // We'll make occluder bounding boxes transparent so the underlying video/foreground shows in front
         const scaleX = videoWidth / (this.videoContainer.clientWidth || videoWidth);
         const scaleY = videoHeight / (this.videoContainer.clientHeight || videoHeight);
 
+        // Small expansion to avoid hairline gaps around detected boxes
+        const expand = Math.max(2, Math.round(Math.min(videoWidth, videoHeight) * 0.01));
+
+        console.debug('AR Wallpaper Preview: applyOcclusionMask drawing boxes', { videoWidth, videoHeight, scaleX, scaleY, expand, detections: this.latestDetections });
+
         this.latestDetections.forEach((box) => {
-            ctx.fillRect(box.x * scaleX, box.y * scaleY, box.width * scaleX, box.height * scaleY);
+            const x = Math.max(0, Math.round(box.x * scaleX) - expand);
+            const y = Math.max(0, Math.round(box.y * scaleY) - expand);
+            const w = Math.min(videoWidth - x, Math.round(box.width * scaleX) + expand * 2);
+            const h = Math.min(videoHeight - y, Math.round(box.height * scaleY) + expand * 2);
+            // clearRect makes those pixels fully transparent in the PNG mask
+            ctx.clearRect(x, y, w, h);
+
+            // draw debug rectangle outline in red when debug mode is enabled
+            if (this.debugMode) {
+                ctx.save();
+                ctx.strokeStyle = 'rgba(255,0,0,0.9)';
+                ctx.lineWidth = Math.max(2, Math.round(Math.min(videoWidth, videoHeight) * 0.01));
+                ctx.strokeRect(x + 0.5, y + 0.5, Math.max(1, w - 1), Math.max(1, h - 1));
+                ctx.restore();
+            }
         });
 
         const dataUrl = this.analysisCanvas.toDataURL('image/png');
 
+        console.debug('AR Wallpaper Preview: generated mask dataUrl length', dataUrl ? dataUrl.length : 0, 'detections', this.latestDetections.length);
+
         if (dataUrl !== this.maskDataUrl) {
-            this.wallpaper.style.setProperty('--ar-wallpaper-mask', `url(${dataUrl})`);
-            this.wallpaper.style.maskImage = `url(${dataUrl})`;
-            this.wallpaper.style.webkitMaskImage = `url(${dataUrl})`;
-            this.maskDataUrl = dataUrl;
+            // explicitly set mask CSS properties to ensure consistent behavior across browsers
+            try {
+                this.wallpaper.style.setProperty('--ar-wallpaper-mask', `url(${dataUrl})`);
+                this.wallpaper.style.maskImage = `url(${dataUrl})`;
+                this.wallpaper.style.webkitMaskImage = `url(${dataUrl})`;
+                this.wallpaper.style.maskRepeat = 'no-repeat';
+                this.wallpaper.style.webkitMaskRepeat = 'no-repeat';
+                this.wallpaper.style.maskSize = '100% 100%';
+                this.wallpaper.style.webkitMaskSize = '100% 100%';
+                this.wallpaper.style.maskPosition = 'center';
+                this.wallpaper.style.webkitMaskPosition = 'center';
+                // Ensure wallpaper sits above video so mask can reveal video beneath
+                this.wallpaper.style.zIndex = '1';
+                // if background-size isn't already cover, store and set to cover for correct alignment
+                try {
+                    const currentSize = window.getComputedStyle(this.wallpaper).backgroundSize || '';
+                    if (!this.prevBackgroundSize) {
+                        this.prevBackgroundSize = currentSize;
+                    }
+                    this.wallpaper.style.backgroundSize = 'cover';
+                } catch (e) {
+                    // ignore
+                }
+                this.maskDataUrl = dataUrl;
+                console.debug('AR Wallpaper Preview: applied mask to wallpaper element');
+            } catch (err) {
+                console.error('AR Wallpaper Preview: failed to apply mask styles', err);
+            }
         }
     }
 }

@@ -427,7 +427,10 @@ export class WebXREngine {
 
         const smoothed = this.smoother.smooth(position, quaternion);
         this.wallpaperMesh.position.copy(smoothed.position);
-        this.wallpaperMesh.quaternion.copy(this.alignToGravity(smoothed.quaternion));
+        // Align the wallpaper to the wall normal (the negative Z-axis of the hit pose)
+	        const wallNormal = new THREE.Vector3(0, 0, 1).applyQuaternion(smoothed.quaternion);
+	        const targetQuaternion = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), wallNormal.negate());
+	        this.wallpaperMesh.quaternion.copy(this.alignToGravity(targetQuaternion));
         this.wallpaperMesh.visible = true;
         this.wallpaperMesh.material.uniforms.uAlpha.value = this.isConfirmed ? 1 : 0.55;
         this.reticle.visible = !this.isConfirmed;
@@ -472,7 +475,10 @@ export class WebXREngine {
             const position = new THREE.Vector3().setFromMatrixPosition(this.lastHitMatrix);
             const quaternion = new THREE.Quaternion().setFromRotationMatrix(this.lastHitMatrix);
             this.wallpaperMesh.position.copy(position);
-            this.wallpaperMesh.quaternion.copy(this.alignToGravity(quaternion));
+            // Align the wallpaper to the wall normal (the negative Z-axis of the hit pose)
+	        const wallNormal = new THREE.Vector3(0, 0, 1).applyQuaternion(quaternion);
+	        const targetQuaternion = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), wallNormal.negate());
+	        this.wallpaperMesh.quaternion.copy(this.alignToGravity(targetQuaternion));
             this.wallpaperMesh.visible = true;
             this.collectPlaneSample(position.clone());
         }
@@ -549,15 +555,15 @@ export class WebXREngine {
         }
         const depth = this.depthManager.update(frame, referenceSpace);
         if (!depth) {
-            this.wallpaperMesh.material.uniforms.uDepthEnabled.value = 0;
+this.wallpaperMesh.material.uniforms.uDepthEnabled.value = 0;
+		        this.wallpaperMesh.material.uniforms.uSegmentationEnabled.value = 0;
             return;
         }
-        const { uniforms } = this.wallpaperMesh.material;
-        uniforms.uDepthTexture.value = depth.texture;
-        uniforms.uDepthEnabled.value = 1;
-        uniforms.uResolution.value.set(this.renderer.domElement.width, this.renderer.domElement.height);
-        uniforms.uDepthScale.value = depth.meterScale;
-        uniforms.uDepthIsFloat.value = depth.isFloat ? 1 : 0;
+this.wallpaperMesh.material.uniforms.uDepthTexture.value = depth.texture;
+		        this.wallpaperMesh.material.uniforms.uDepthScale.value = depth.meterScale;
+		        this.wallpaperMesh.material.uniforms.uDepthIsFloat.value = depth.isFloat ? 1 : 0;
+		        this.wallpaperMesh.material.uniforms.uResolution.value.set(depth.width, depth.height);
+		        this.wallpaperMesh.material.uniforms.uDepthEnabled.value = 1;
         this.onStatus({ id: 'occlusion', label: this.data.i18n.status_depth, state: 'success' });
     }
 
@@ -581,8 +587,8 @@ export class WebXREngine {
         if (mask) {
             this.segmentationTexture.image = mask;
             this.segmentationTexture.needsUpdate = true;
-            this.wallpaperMesh.material.uniforms.uSegmentationTexture.value = this.segmentationTexture;
-            this.wallpaperMesh.material.uniforms.uSegmentationEnabled.value = this.wallpaperMesh.material.uniforms.uDepthEnabled.value ? 0 : 1;
+this.wallpaperMesh.material.uniforms.uSegmentationTexture.value = this.segmentationTexture;
+		        this.wallpaperMesh.material.uniforms.uSegmentationEnabled.value = this.wallpaperMesh.material.uniforms.uDepthEnabled.value ? 0 : 1;
         }
     }
 

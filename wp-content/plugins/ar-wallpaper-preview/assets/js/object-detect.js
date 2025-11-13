@@ -9,8 +9,9 @@ const DEFAULT_OBJECT_MODELS = [
  */
 export class ObjectDetectHelper {
     constructor({
-        classes = ['person', 'chair', 'couch', 'dining table', 'potted plant', 'tv'],
-        scoreThreshold = 0.4,
+        // Expanded list of COCO / common labels to help detect furniture and large foreground objects
+        classes = ['person', 'chair', 'couch', 'sofa', 'dining table', 'diningtable', 'potted plant', 'pottedplant', 'tv', 'television', 'bed', 'table', 'bench', 'nightstand'],
+        scoreThreshold = 0.35,
         moduleConfig = {},
     } = {}) {
         this.classes = classes;

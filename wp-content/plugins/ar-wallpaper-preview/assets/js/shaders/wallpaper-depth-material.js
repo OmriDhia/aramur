@@ -52,10 +52,16 @@ export function createWallpaperMaterial(texture) {
 
                 vec2 depthUv = gl_FragCoord.xy / uResolution;
 
-                if (uSegmentationEnabled == 1) {
-                    float mask = texture2D(uSegmentationTexture, depthUv).a;
-                    if (mask > 0.45) discard;
-                }
+if (uSegmentationEnabled == 1) {
+	                    // Segmentation mask is typically a single channel (red or alpha) where a high value
+	                    // indicates the foreground object (e.g., a person).
+	                    // We use the alpha channel here as it was used in the original code.
+	                    float mask = texture2D(uSegmentationTexture, depthUv).a;
+	                    // If the mask value is high (i.e., it's a person/foreground object), discard the wallpaper fragment.
+	                    if (mask > 0.45) {
+	                        discard;
+	                    }
+	                }
 
                 if (uDepthEnabled == 1) {
                     float realDepth;
@@ -68,10 +74,19 @@ export function createWallpaperMaterial(texture) {
                         float depthMm = high + low * 256.0;
                         realDepth = depthMm * uDepthScale;
                     }
-                    float virtualDepth = linearizeDepth(gl_FragCoord.z);
-                    if (realDepth > 0.0 && realDepth < virtualDepth) {
-                        discard;
-                    }
+// The virtual depth of the wallpaper plane at this fragment
+	                    // is the distance from the camera to the fragment's position in the world.
+	                    // Since the wallpaper is a flat plane, we can use the fragment's z-depth (gl_FragCoord.z)
+	                    // and linearize it to get the distance in meters.
+	                    float virtualDepth = linearizeDepth(gl_FragCoord.z);
+	
+	                    // We want to discard the fragment (i.e., hide the wallpaper) if the real-world depth
+	                    // is less than the virtual depth of the wallpaper. This means a real object is
+	                    // in front of the wallpaper.
+	                    // We also check realDepth > 0.0 to ignore invalid depth data (e.g., far away or unknown).
+	                    if (realDepth > 0.0 && realDepth < virtualDepth) {
+	                        discard;
+	                    }
                 }
 
                 gl_FragColor = base;
