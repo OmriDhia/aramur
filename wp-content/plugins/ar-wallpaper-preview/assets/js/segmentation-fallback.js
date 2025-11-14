@@ -115,6 +115,10 @@ export class SegmentationFallback {
         this.smoothing = maskOptions.smoothing ?? this.smoothing;
         this.personThreshold = typeof maskOptions.personThreshold === 'number' ? maskOptions.personThreshold : 0.5;
         this.boxExpansion = typeof maskOptions.boxExpansion === 'number' ? maskOptions.boxExpansion : DEFAULT_BOX_EXPANSION;
+        this.edgeRefine = typeof maskOptions.edgeRefine === 'number' ? maskOptions.edgeRefine : 0;
+
+        this.dilation = Math.trunc(this.dilation);
+        this.edgeRefine = Math.trunc(this.edgeRefine);
 
         // Default set of foreground labels we want to keep in front of wallpaper, with configuration hooks.
         const resolvedLabels = this.resolveForegroundLabels(maskOptions);
@@ -472,8 +476,12 @@ export class SegmentationFallback {
             }
         }
 
-        if (this.dilation > 0) {
-            this.dilate(imageData, width, height, this.dilation);
+        if (this.dilation !== 0) {
+            this.applyMorphology(imageData, width, height, this.dilation);
+        }
+
+        if (this.edgeRefine !== 0) {
+            this.applyMorphology(imageData, width, height, this.edgeRefine);
         }
 
         if (this.smoothing > 0) {
@@ -516,6 +524,18 @@ export class SegmentationFallback {
         targetCtx.putImageData(original, 0, 0);
     }
 
+    applyMorphology(imageData, width, height, amount) {
+        const radius = Math.max(1, Math.round(Math.abs(amount)));
+        if (radius === 0) {
+            return;
+        }
+        if (amount > 0) {
+            this.dilate(imageData, width, height, radius);
+        } else {
+            this.erode(imageData, width, height, radius);
+        }
+    }
+
     dilate(imageData, width, height, radius) {
         const source = new Uint8ClampedArray(imageData.data);
         const dest = imageData.data;
@@ -536,6 +556,30 @@ export class SegmentationFallback {
                     if (maxAlpha === 255) break;
                 }
                 dest[y * rowLength + x * 4 + 3] = maxAlpha;
+            }
+        }
+    }
+
+    erode(imageData, width, height, radius) {
+        const source = new Uint8ClampedArray(imageData.data);
+        const dest = imageData.data;
+        const rowLength = width * 4;
+        for (let y = 0; y < height; y++) {
+            for (let x = 0; x < width; x++) {
+                let minAlpha = 255;
+                for (let dy = -radius; dy <= radius; dy++) {
+                    const ny = y + dy;
+                    if (ny < 0 || ny >= height) continue;
+                    for (let dx = -radius; dx <= radius; dx++) {
+                        const nx = x + dx;
+                        if (nx < 0 || nx >= width) continue;
+                        const offset = ny * rowLength + nx * 4 + 3;
+                        minAlpha = Math.min(minAlpha, source[offset]);
+                        if (minAlpha === 0) break;
+                    }
+                    if (minAlpha === 0) break;
+                }
+                dest[y * rowLength + x * 4 + 3] = minAlpha;
             }
         }
     }

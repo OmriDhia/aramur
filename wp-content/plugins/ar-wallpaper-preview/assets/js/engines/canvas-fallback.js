@@ -1,5 +1,20 @@
 import { SegmentationFallback } from '../segmentation-fallback.js';
 
+const PERFORMANCE_INTERVALS = {
+    quality: 33,
+    balanced: 66,
+    battery: 120,
+};
+
+const PERFORMANCE_SCALES = {
+    quality: 1,
+    balanced: 0.75,
+    battery: 0.5,
+};
+
+const VALID_PERFORMANCE_MODES = Object.keys(PERFORMANCE_INTERVALS);
+const MIN_MASK_DIMENSION = 64;
+
 /**
  * 2D canvas fallback with manual four-point anchors and segmentation-based occlusion.
  */
@@ -18,12 +33,24 @@ export class CanvasFallbackEngine {
         this.segmentation = null;
         this.segmentationMask = document.createElement('canvas');
         this.segmentationCtx = this.segmentationMask.getContext('2d');
+        this.wallpaperBuffer = document.createElement('canvas');
+        this.wallpaperBufferCtx = this.wallpaperBuffer.getContext('2d');
         this.active = true;
-        this.performanceMode = data.performance_mode || 'balanced';
-        this.segmentationInterval = this.performanceMode === 'battery' ? 90 : (this.performanceMode === 'quality' ? 33 : 60);
+        this.performanceMode = this.sanitisePerformanceMode(data.performance_mode);
+        this.segmentationInterval = PERFORMANCE_INTERVALS[this.performanceMode];
+        this.segmentationScale = PERFORMANCE_SCALES[this.performanceMode];
         this.lastSegmentationRun = 0;
         this.lastMaskFrame = null;
+        this.isEstimatingMask = false;
         this.init();
+    }
+
+    sanitisePerformanceMode(mode) {
+        const value = typeof mode === 'string' ? mode.toLowerCase() : '';
+        if (VALID_PERFORMANCE_MODES.includes(value)) {
+            return value;
+        }
+        return 'balanced';
     }
 
     init() {
@@ -89,7 +116,7 @@ export class CanvasFallbackEngine {
         this.segmentation = new SegmentationFallback({
             mode: this.data.occlusion_mode,
             dilation: 6,
-            performanceMode: this.data.performance_mode,
+            performanceMode: this.performanceMode,
             moduleConfig: this.data.mediapipe,
         });
         try {
@@ -113,6 +140,13 @@ export class CanvasFallbackEngine {
             return;
         }
 
+        const performanceLabel = this.data.i18n.performance_label || 'Mask performance';
+        const performanceOptions = [
+            { value: 'quality', label: this.data.i18n.performance_quality || 'Quality' },
+            { value: 'balanced', label: this.data.i18n.performance_balanced || 'Balanced' },
+            { value: 'battery', label: this.data.i18n.performance_battery || 'Battery Saver' },
+        ];
+
         controls.innerHTML = `
             <div class="arwp-control-group">
                 <button type="button" data-action="fit-width">${this.data.i18n.fit_width}</button>
@@ -120,7 +154,22 @@ export class CanvasFallbackEngine {
                 <button type="button" data-action="reset">${this.data.i18n.reset}</button>
                 <button type="button" data-action="snapshot">${this.data.i18n.snapshot}</button>
             </div>
+            <div class="arwp-control-group arwp-performance-group">
+                <label>
+                    <span>${performanceLabel}</span>
+                    <select data-action="performance-mode">
+                        ${performanceOptions
+                            .map((option) => `<option value="${option.value}">${option.label}</option>`)
+                            .join('')}
+                    </select>
+                </label>
+            </div>
         `;
+
+        const performanceSelect = controls.querySelector('select[data-action="performance-mode"]');
+        if (performanceSelect) {
+            performanceSelect.value = this.performanceMode;
+        }
 
         controls.addEventListener('click', (event) => {
             const action = event.target.getAttribute('data-action');
@@ -138,6 +187,13 @@ export class CanvasFallbackEngine {
                 this.exportSnapshot();
             }
         });
+
+        controls.addEventListener('change', (event) => {
+            const action = event.target.getAttribute('data-action');
+            if (action === 'performance-mode') {
+                this.updatePerformanceMode(event.target.value);
+            }
+        });
     }
 
     setupListeners() {
@@ -152,8 +208,8 @@ export class CanvasFallbackEngine {
         const { clientWidth, clientHeight } = this.container;
         this.canvas.width = clientWidth;
         this.canvas.height = clientHeight;
-        this.segmentationMask.width = clientWidth;
-        this.segmentationMask.height = clientHeight;
+        this.wallpaperBuffer.width = clientWidth;
+        this.wallpaperBuffer.height = clientHeight;
         if (!this.corners.length) {
             this.resetCorners();
         }
@@ -273,34 +329,109 @@ export class CanvasFallbackEngine {
         this.ctx.clearRect(0, 0, width, height);
         this.ctx.drawImage(this.video, 0, 0, width, height);
 
-        this.ctx.save();
-        this.drawWallpaper();
-        this.ctx.restore();
+        this.prepareWallpaperBuffer(width, height);
 
+        let maskFrame = null;
         if (this.segmentation) {
-            const now = performance.now();
-            let mask = null;
-            if (now - this.lastSegmentationRun >= this.segmentationInterval) {
-                this.lastSegmentationRun = now;
-                mask = await this.segmentation.estimate(this.video, width, height, this.segmentationMask, this.segmentationCtx);
-                if (mask) {
-                    this.lastMaskFrame = mask;
-                }
-            } else {
-                mask = this.lastMaskFrame;
-            }
-            if (mask) {
-                this.ctx.save();
-                this.ctx.globalCompositeOperation = 'destination-out';
-                this.ctx.drawImage(mask, 0, 0, width, height);
-                this.ctx.restore();
-            }
+            maskFrame = await this.getSegmentationMask(width, height);
+        }
+
+        if (maskFrame) {
+            this.applyMaskToVideo(maskFrame, width, height);
+            this.ctx.save();
+            this.ctx.globalCompositeOperation = 'destination-over';
+            this.ctx.drawImage(this.wallpaperBuffer, 0, 0, width, height);
+            this.ctx.restore();
+        } else {
+            this.ctx.save();
+            this.ctx.drawImage(this.wallpaperBuffer, 0, 0, width, height);
+            this.ctx.restore();
         }
 
         this.drawCornerHandles();
     }
 
-    drawWallpaper() {
+    prepareWallpaperBuffer(width, height) {
+        if (this.wallpaperBuffer.width !== width || this.wallpaperBuffer.height !== height) {
+            this.wallpaperBuffer.width = width;
+            this.wallpaperBuffer.height = height;
+        } else {
+            this.wallpaperBufferCtx.clearRect(0, 0, width, height);
+        }
+        this.drawWallpaper(this.wallpaperBufferCtx);
+    }
+
+    async getSegmentationMask(width, height) {
+        if (this.isEstimatingMask) {
+            return this.lastMaskFrame;
+        }
+        const now = performance.now();
+        if (now - this.lastSegmentationRun < this.segmentationInterval) {
+            return this.lastMaskFrame;
+        }
+
+        this.lastSegmentationRun = now;
+        this.isEstimatingMask = true;
+
+        const scaledWidth = Math.max(MIN_MASK_DIMENSION, Math.round(width * this.segmentationScale));
+        const scaledHeight = Math.max(MIN_MASK_DIMENSION, Math.round(height * this.segmentationScale));
+
+        try {
+            const mask = await this.segmentation.estimate(
+                this.video,
+                scaledWidth,
+                scaledHeight,
+                this.segmentationMask,
+                this.segmentationCtx,
+            );
+            if (mask) {
+                this.lastMaskFrame = { canvas: mask, width: scaledWidth, height: scaledHeight };
+            }
+        } catch (error) {
+            console.warn('AR Wallpaper Preview: segmentation estimate failed', error);
+        } finally {
+            this.isEstimatingMask = false;
+        }
+
+        return this.lastMaskFrame;
+    }
+
+    applyMaskToVideo(maskFrame, width, height) {
+        if (!maskFrame || !maskFrame.canvas || this.corners.length < 8) {
+            return;
+        }
+        this.ctx.save();
+        this.ctx.beginPath();
+        this.ctx.moveTo(this.corners[0], this.corners[1]);
+        for (let i = 2; i < this.corners.length; i += 2) {
+            this.ctx.lineTo(this.corners[i], this.corners[i + 1]);
+        }
+        this.ctx.closePath();
+        this.ctx.clip();
+        this.ctx.globalCompositeOperation = 'destination-in';
+        this.ctx.drawImage(maskFrame.canvas, 0, 0, width, height);
+        this.ctx.restore();
+    }
+
+    updatePerformanceMode(mode) {
+        const resolved = this.sanitisePerformanceMode(mode);
+        if (resolved === this.performanceMode) {
+            return;
+        }
+        this.performanceMode = resolved;
+        this.data.performance_mode = resolved;
+        this.segmentationInterval = PERFORMANCE_INTERVALS[this.performanceMode];
+        this.segmentationScale = PERFORMANCE_SCALES[this.performanceMode];
+        this.lastSegmentationRun = 0;
+        this.lastMaskFrame = null;
+        const controls = document.getElementById('arwp-ui-controls');
+        const select = controls ? controls.querySelector('select[data-action="performance-mode"]') : null;
+        if (select) {
+            select.value = this.performanceMode;
+        }
+    }
+
+    drawWallpaper(targetCtx = this.ctx) {
         if (!this.corners.length) {
             return;
         }
@@ -330,8 +461,10 @@ export class CanvasFallbackEngine {
         const m21 = ((dY1 - dY0) * (sY2 - sY0) - (dY2 - dY0) * (sY1 - sY0)) / denom;
         const m22 = ((dY2 - dY0) * (sX1 - sX0) - (dY1 - dY0) * (sX2 - sX0)) / denom;
 
-        this.ctx.save();
-        this.ctx.transform(m11, m21, m12, m22, dX0, dY0);
+        const ctx = targetCtx;
+
+        ctx.save();
+        ctx.transform(m11, m21, m12, m22, dX0, dY0);
 
         const tileX = this.data.tiling ? Math.max(1, this.data.repeat_x) : 1;
         const tileY = this.data.tiling ? Math.max(1, this.data.repeat_y) : 1;
@@ -339,11 +472,11 @@ export class CanvasFallbackEngine {
         const tileWidth = this.wallpaperImage.width / tileX;
         const tileHeight = this.wallpaperImage.height / tileY;
 
-        this.ctx.globalAlpha = Math.min(Math.max(this.data.brightness, 0.1), 1.25);
+        ctx.globalAlpha = Math.min(Math.max(this.data.brightness, 0.1), 1.25);
 
         for (let x = 0; x < tileX; x++) {
             for (let y = 0; y < tileY; y++) {
-                this.ctx.drawImage(
+                ctx.drawImage(
                     this.wallpaperImage,
                     0,
                     0,
@@ -357,7 +490,7 @@ export class CanvasFallbackEngine {
             }
         }
 
-        this.ctx.restore();
+        ctx.restore();
     }
 
     drawCornerHandles() {
