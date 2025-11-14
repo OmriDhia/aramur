@@ -1,18 +1,93 @@
 import { ObjectDetectHelper } from './object-detect.js';
 import { configureVisionSources, loadVisionFileset, loadVisionModule } from './vision-loader.js';
 
-const DEFAULT_SEGMENTATION_MODELS = [
-    'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/1/selfie_segmenter.task',
+const GENERAL_SEGMENTER_MODEL =
+    'https://storage.googleapis.com/mediapipe-models/image_segmenter/general_segmenter/float16/1/general_segmenter.task';
+const SELFIE_SEGMENTER_MODEL =
+    'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/1/selfie_segmenter.task';
+
+const DEFAULT_SEGMENTATION_MODELS = [GENERAL_SEGMENTER_MODEL, SELFIE_SEGMENTER_MODEL];
+
+const DEFAULT_FOREGROUND_LABELS = [
+    'person',
+    'people',
+    'human',
+    'chair',
+    'armchair',
+    'stool',
+    'sofa',
+    'couch',
+    'loveseat',
+    'bench',
+    'recliner',
+    'bed',
+    'bunk bed',
+    'nightstand',
+    'crib',
+    'table',
+    'dining table',
+    'coffee table',
+    'desk',
+    'counter',
+    'island',
+    'tv',
+    'television',
+    'monitor',
+    'screen',
+    'computer',
+    'laptop',
+    'plant',
+    'potted plant',
+    'pottedplant',
+    'flower',
+    'tree',
+    'wardrobe',
+    'dresser',
+    'cabinet',
+    'shelf',
+    'bookcase',
 ];
 
-// Add a multi-class general segmenter model (if available) as a recommended option
-const MULTI_CLASS_SEGMENTER = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/general_segmenter/float16/1/general_segmenter.task';
+const DEFAULT_PARTIAL_MATCHES = ['chair', 'sofa', 'couch', 'table', 'desk', 'plant', 'tv', 'monitor', 'screen', 'bed'];
+
+const DEFAULT_BOX_EXPANSION = 0.08;
+
+function normaliseLabel(label) {
+    return (label || '').toLowerCase().trim();
+}
+
+function uniqueArray(values) {
+    return Array.from(new Set(values.filter(Boolean)));
+}
+
+function derivePartialMatches(labels) {
+    const partials = new Set(DEFAULT_PARTIAL_MATCHES);
+    labels.forEach((label) => {
+        const norm = normaliseLabel(label);
+        if (!norm) {
+            return;
+        }
+        norm
+            .split(/[\s/,-]+/)
+            .map((token) => token.trim())
+            .filter((token) => token.length > 2)
+            .forEach((token) => partials.add(token));
+    });
+    return Array.from(partials);
+}
 
 /**
  * Segmentation fallback used when depth occlusion is not available.
  */
 export class SegmentationFallback {
-    constructor({ mode = 'segmentation', dilation = 4, feather = 3, smoothing = 0.6, performanceMode = 'balanced', moduleConfig = {} } = {}) {
+    constructor({
+        mode = 'segmentation',
+        dilation = 4,
+        feather = 3,
+        smoothing = 0.6,
+        performanceMode = 'balanced',
+        moduleConfig = {},
+    } = {}) {
         this.mode = mode;
         this.dilation = dilation;
         this.feather = feather;
@@ -26,30 +101,275 @@ export class SegmentationFallback {
         this._tmpCtx = this._tmpCanvas.getContext('2d');
         this._prevMask = null; // ImageData of previous mask alpha channel for temporal smoothing
         const globalConfig = typeof window !== 'undefined' && window.arwpData ? window.arwpData.mediapipe : null;
-        this.moduleConfig = moduleConfig && Object.keys(moduleConfig).length ? moduleConfig : (globalConfig || {});
-        this.modelUrls = Array.isArray(this.moduleConfig?.segmenterModels) && this.moduleConfig.segmenterModels.length
-            ? this.moduleConfig.segmenterModels
-            : (this.moduleConfig?.preferMultiClass ? [MULTI_CLASS_SEGMENTER, ...DEFAULT_SEGMENTATION_MODELS] : DEFAULT_SEGMENTATION_MODELS);
+        this.moduleConfig = moduleConfig && Object.keys(moduleConfig).length ? moduleConfig : globalConfig || {};
+
+        const configuredModels = Array.isArray(this.moduleConfig?.segmenterModels)
+            ? this.moduleConfig.segmenterModels.filter(Boolean)
+            : null;
+        this.modelUrls = configuredModels && configuredModels.length ? configuredModels : DEFAULT_SEGMENTATION_MODELS;
         configureVisionSources(this.moduleConfig);
 
-        // Default set of foreground labels we want to keep in front of wallpaper
-        this.foregroundLabels = new Set([
-            'person', 'chair', 'sofa', 'couch', 'dining table', 'diningtable', 'table', 'potted plant', 'pottedplant', 'plant', 'tv', 'television', 'bed'
-        ]);
+        const maskOptions = this.resolveMaskOptions();
+        this.dilation = maskOptions.dilation ?? this.dilation;
+        this.feather = maskOptions.feather ?? this.feather;
+        this.smoothing = maskOptions.smoothing ?? this.smoothing;
+        this.personThreshold = typeof maskOptions.personThreshold === 'number' ? maskOptions.personThreshold : 0.5;
+        this.boxExpansion = typeof maskOptions.boxExpansion === 'number' ? maskOptions.boxExpansion : DEFAULT_BOX_EXPANSION;
+
+        // Default set of foreground labels we want to keep in front of wallpaper, with configuration hooks.
+        const resolvedLabels = this.resolveForegroundLabels(maskOptions);
+        this.foregroundLabels = new Set(resolvedLabels.map(normaliseLabel));
+        this.partialLabelMatches = derivePartialMatches(resolvedLabels);
+    }
+
+    resolveMaskOptions() {
+        const candidates = [
+            this.moduleConfig?.mask,
+            this.moduleConfig?.maskOptions,
+            this.moduleConfig?.segmentationMask,
+            this.moduleConfig?.segmentation,
+        ];
+        for (const candidate of candidates) {
+            if (candidate && typeof candidate === 'object') {
+                return candidate;
+            }
+        }
+        return {};
+    }
+
+    resolveForegroundLabels(maskOptions) {
+        const globalForeground =
+            (typeof window !== 'undefined' && window.arwpData && window.arwpData.segmentation?.foregroundLabels) ||
+            (typeof window !== 'undefined' && window.arwpData && window.arwpData.foregroundLabels);
+        const candidateLists = [
+            maskOptions?.foregroundLabels,
+            this.moduleConfig?.foregroundLabels,
+            this.moduleConfig?.segmentation?.foregroundLabels,
+            this.moduleConfig?.segmentationMask?.foregroundLabels,
+            globalForeground,
+        ];
+
+        let base = null;
+        for (const list of candidateLists) {
+            if (Array.isArray(list) && list.length) {
+                base = list;
+                break;
+            }
+        }
+
+        if (!base) {
+            base = DEFAULT_FOREGROUND_LABELS;
+        }
+
+        const additional = [];
+        const additionalCandidates = [
+            maskOptions?.additionalForegroundLabels,
+            this.moduleConfig?.additionalForegroundLabels,
+            this.moduleConfig?.segmentation?.additionalForegroundLabels,
+        ];
+        additionalCandidates.forEach((candidate) => {
+            if (Array.isArray(candidate) && candidate.length) {
+                additional.push(...candidate);
+            }
+        });
+
+        return uniqueArray([...base, ...additional]);
     }
 
     async load() {
         const vision = await loadVisionFileset();
         const { ImageSegmenter } = await loadVisionModule();
         this.segmenter = await this.createSegmenter(ImageSegmenter, vision);
-        if (this.mode === 'objects') {
-            this.objectHelper = new ObjectDetectHelper({ moduleConfig: this.moduleConfig });
+
+        // Even when relying primarily on segmentation we keep an object detector handy to fill gaps.
+        this.objectHelper = new ObjectDetectHelper({ moduleConfig: this.moduleConfig, classes: this.getDetectorAllowlist() });
+        try {
             await this.objectHelper.load();
-        } else {
-            // Even when using segmentation-only mode, we still keep an object detector helper to supplement (optional)
-            this.objectHelper = new ObjectDetectHelper({ moduleConfig: this.moduleConfig });
-            await this.objectHelper.load();
+        } catch (error) {
+            console.warn('AR Wallpaper Preview: object detector unavailable, relying on tf.js fallback when possible', error);
         }
+    }
+
+    getDetectorAllowlist() {
+        const base = new Set([
+            'person',
+            'people',
+            'chair',
+            'couch',
+            'sofa',
+            'dining table',
+            'table',
+            'desk',
+            'coffee table',
+            'potted plant',
+            'plant',
+            'tv',
+            'television',
+            'monitor',
+            'screen',
+            'bed',
+            'bench',
+            'nightstand',
+            'dresser',
+            'wardrobe',
+            'cabinet',
+            'shelf',
+            'bookcase',
+            'stool',
+            'sofa chair',
+        ]);
+        this.foregroundLabels.forEach((label) => base.add(label));
+        this.partialLabelMatches.forEach((token) => base.add(token));
+        return Array.from(base);
+    }
+
+    isForegroundLabel(label) {
+        const normalized = normaliseLabel(label);
+        if (!normalized) {
+            return false;
+        }
+        if (this.foregroundLabels.has(normalized)) {
+            return true;
+        }
+        return this.partialLabelMatches.some((token) => normalized.includes(token));
+    }
+
+    mergeDetections(imageData, detections, width, height) {
+        const data = imageData.data;
+        detections.forEach((detection) => {
+            if (!detection) {
+                return;
+            }
+            const label =
+                detection.label ||
+                detection.categoryName ||
+                detection.class ||
+                detection?.categories?.[0]?.categoryName ||
+                detection?.categories?.[0]?.displayName ||
+                detection?.categories?.[0]?.label ||
+                detection?.categories?.[0]?.name ||
+                '';
+            if (!this.isForegroundLabel(label)) {
+                return;
+            }
+
+            const normalizedBox = this.normaliseDetectionBox(detection, width, height);
+            if (!normalizedBox) {
+                return;
+            }
+            const bounds = this.expandNormalizedBox(
+                normalizedBox,
+                width,
+                height,
+                typeof detection.boxExpansion === 'number' ? detection.boxExpansion : this.boxExpansion,
+            );
+            if (!bounds) {
+                return;
+            }
+
+            const { x0, y0, x1, y1 } = bounds;
+            for (let y = y0; y < y1; y++) {
+                let offset = y * width * 4 + x0 * 4 + 3;
+                for (let x = x0; x < x1; x++, offset += 4) {
+                    data[offset] = 255;
+                }
+            }
+        });
+    }
+
+    normaliseDetectionBox(detection, width, height) {
+        const bbox = detection?.bbox || detection?.boundingBox;
+        if (!bbox) {
+            return null;
+        }
+
+        if (bbox.normalized === false) {
+            const x = bbox.x ?? bbox.originX ?? bbox.xMin ?? 0;
+            const y = bbox.y ?? bbox.originY ?? bbox.yMin ?? 0;
+            const boxWidth = bbox.width ?? (bbox.xMax != null ? bbox.xMax - (bbox.x ?? bbox.originX ?? bbox.xMin ?? 0) : 0);
+            const boxHeight = bbox.height ?? (bbox.yMax != null ? bbox.yMax - (bbox.y ?? bbox.originY ?? bbox.yMin ?? 0) : 0);
+            if (!boxWidth || !boxHeight) {
+                return null;
+            }
+            return {
+                x: x / width,
+                y: y / height,
+                width: boxWidth / width,
+                height: boxHeight / height,
+            };
+        }
+
+        let x = bbox.x ?? bbox.originX ?? bbox.xMin ?? 0;
+        let y = bbox.y ?? bbox.originY ?? bbox.yMin ?? 0;
+        let boxWidth = bbox.width;
+        let boxHeight = bbox.height;
+
+        if (boxWidth == null && bbox.xMax != null) {
+            boxWidth = bbox.xMax - x;
+        }
+        if (boxHeight == null && bbox.yMax != null) {
+            boxHeight = bbox.yMax - y;
+        }
+        if (boxWidth == null || boxHeight == null) {
+            return null;
+        }
+
+        const values = [x, y, boxWidth, boxHeight].map((value) => (Number.isFinite(value) ? value : 0));
+        const maxValue = Math.max(...values.map((value) => Math.abs(value)));
+        if (bbox.normalized === true || maxValue <= 2) {
+            return { x, y, width: boxWidth, height: boxHeight };
+        }
+
+        return {
+            x: x / width,
+            y: y / height,
+            width: boxWidth / width,
+            height: boxHeight / height,
+        };
+    }
+
+    expandNormalizedBox(box, width, height, expansion = this.boxExpansion) {
+        if (!box) {
+            return null;
+        }
+        const baseX = box.x * width;
+        const baseY = box.y * height;
+        const baseW = box.width * width;
+        const baseH = box.height * height;
+        if (baseW <= 1 || baseH <= 1) {
+            return null;
+        }
+        const padX = Math.max(2, baseW * expansion);
+        const padY = Math.max(2, baseH * expansion);
+        const x0 = Math.max(0, Math.floor(baseX - padX));
+        const y0 = Math.max(0, Math.floor(baseY - padY));
+        const x1 = Math.min(width, Math.ceil(baseX + baseW + padX));
+        const y1 = Math.min(height, Math.ceil(baseY + baseH + padY));
+        if (x1 <= x0 || y1 <= y0) {
+            return null;
+        }
+        return { x0, y0, x1, y1 };
+    }
+
+    applyTemporalSmoothing(imageData, width, height) {
+        const total = width * height;
+        if (!this._prevMask || this._prevMask.width !== width || this._prevMask.height !== height) {
+            this._prevMask = new ImageData(new Uint8ClampedArray(imageData.data), width, height);
+            return imageData;
+        }
+
+        const prev = this._prevMask.data;
+        const curr = imageData.data;
+        const s = this.smoothing;
+        for (let i = 0; i < total; i++) {
+            const idx = i * 4 + 3;
+            const prevA = prev[idx];
+            const currA = curr[idx];
+            const blended = Math.round(prevA * s + currA * (1 - s));
+            curr[idx] = blended;
+            prev[idx] = blended;
+        }
+        return imageData;
     }
 
     async createSegmenter(ImageSegmenter, vision) {
@@ -94,92 +414,74 @@ export class SegmentationFallback {
             return null;
         }
 
-        // the categoryMask may provide integer class indices per-pixel (in a Float32Array)
+        const maskWidth = mask.width || width;
+        const maskHeight = mask.height || height;
         const floatData = mask.getAsFloat32Array();
-        const pixels = floatData.length;
-        const imageData = targetCtx.createImageData(width, height);
+        const totalPixels = floatData.length;
 
-        // Build label map when available (some models return segmentation.categories describing labels)
-        const categoriesMeta = segmentation?.categories || null; // may be an array of {index, categoryName}
+        const categoriesMeta = Array.isArray(segmentation?.categories) ? segmentation.categories : null;
         const labelForIndex = (idx) => {
-            if (!categoriesMeta || !categoriesMeta.length) return String(idx);
+            if (!categoriesMeta || !categoriesMeta.length) {
+                return String(idx);
+            }
             const meta = categoriesMeta[idx];
-            if (!meta) return String(idx);
-            // try several common property names
-            return (meta.categoryName || meta.displayName || meta.label || meta.name || String(idx)).toLowerCase();
+            if (!meta) {
+                return String(idx);
+            }
+            return normaliseLabel(meta.categoryName || meta.displayName || meta.label || meta.name || idx);
         };
 
-        // If model is selfie-segmenter the mask values are likely 0..1 probabilities for foreground; if categoriesMeta is present then values are indices
-        const hasCategoryIndices = Array.isArray(categoriesMeta) && categoriesMeta.length > 0;
-
-        for (let i = 0; i < pixels; i++) {
+        const hasCategoryIndices = Boolean(categoriesMeta && categoriesMeta.length);
+        const baseMask = new ImageData(maskWidth, maskHeight);
+        for (let i = 0; i < totalPixels; i++) {
             let alpha = 0;
             if (hasCategoryIndices) {
                 const clsIdx = Math.round(floatData[i]);
                 const label = labelForIndex(clsIdx);
-                if (this.foregroundLabels.has(label)) {
+                if (this.isForegroundLabel(label)) {
                     alpha = 255;
                 }
             } else {
-                // fallback: treat value as person probability
                 const prob = floatData[i];
-                alpha = prob > 0.5 ? 255 : 0;
+                alpha = prob >= this.personThreshold ? 255 : 0;
             }
-
-            imageData.data[i * 4] = 0;
-            imageData.data[i * 4 + 1] = 0;
-            imageData.data[i * 4 + 2] = 0;
-            imageData.data[i * 4 + 3] = alpha;
+            const offset = i * 4;
+            baseMask.data[offset] = 0;
+            baseMask.data[offset + 1] = 0;
+            baseMask.data[offset + 2] = 0;
+            baseMask.data[offset + 3] = alpha;
         }
 
-        // Supplement with object detections to catch things segmentation missed.
+        // Scale mask to target resolution if necessary.
+        this._tmpCanvas.width = maskWidth;
+        this._tmpCanvas.height = maskHeight;
+        this._tmpCtx.putImageData(baseMask, 0, 0);
+        targetCtx.clearRect(0, 0, width, height);
+        targetCtx.drawImage(this._tmpCanvas, 0, 0, width, height);
+
+        const imageData = targetCtx.getImageData(0, 0, width, height);
+
         if (this.objectHelper) {
-            const detections = await this.objectHelper.detect(video);
-            detections.forEach((detection) => {
-                // detection may contain categories array or label field — try to get a string label
-                const detLabel = (detection?.categories?.[0]?.categoryName || detection?.categories?.[0]?.label || detection?.label || '') .toLowerCase();
-                // if this detection is one of the foreground classes, fill its bounding box
-                if (this.foregroundLabels.has(detLabel) || detLabel.includes('chair') || detLabel.includes('sofa') || detLabel.includes('table') || detLabel.includes('bed')) {
-                    const { originX, originY, width: boxWidth, height: boxHeight } = detection.boundingBox;
-                    const x0 = Math.max(0, Math.floor((originX - 0.05) * width));
-                    const y0 = Math.max(0, Math.floor((originY - 0.05) * height));
-                    const x1 = Math.min(width, Math.ceil((originX + boxWidth + 0.05) * width));
-                    const y1 = Math.min(height, Math.ceil((originY + boxHeight + 0.05) * height));
-                    for (let y = y0; y < y1; y++) {
-                        for (let x = x0; x < x1; x++) {
-                            imageData.data[y * width * 4 + x * 4 + 3] = 255;
-                        }
-                    }
+            try {
+                const detections = await this.objectHelper.detect(video);
+                if (Array.isArray(detections) && detections.length) {
+                    this.mergeDetections(imageData, detections, width, height);
                 }
-            });
+            } catch (error) {
+                console.warn('AR Wallpaper Preview: object detection failed', error);
+            }
         }
 
-        // Apply a dilation to close small holes and then a feather blur for smooth edges
         if (this.dilation > 0) {
             this.dilate(imageData, width, height, this.dilation);
         }
 
-        // Temporal smoothing: blend current mask alpha with previous frame's alpha to reduce flicker
         if (this.smoothing > 0) {
-            const total = width * height;
-            if (!this._prevMask || this._prevMask.width !== width || this._prevMask.height !== height) {
-                this._prevMask = new ImageData(new Uint8ClampedArray(imageData.data), width, height);
-            } else {
-                const prev = this._prevMask.data;
-                const curr = imageData.data;
-                const s = this.smoothing;
-                for (let i = 0; i < total; i++) {
-                    const idx = i * 4 + 3;
-                    const prevA = prev[idx];
-                    const currA = curr[idx];
-                    const blended = Math.round(prevA * s + currA * (1 - s));
-                    curr[idx] = blended;
-                    prev[idx] = blended; // update prev for next frame
-                }
-            }
+            this.applyTemporalSmoothing(imageData, width, height);
+        } else {
+            this._prevMask = null;
         }
 
-        // Put initial binary (or temporally-smoothed) mask to canvas
         targetCtx.putImageData(imageData, 0, 0);
 
         if (this.feather > 0) {
