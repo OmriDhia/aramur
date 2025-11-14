@@ -11,6 +11,7 @@ export class DepthOcclusionManager {
         this.supported = false;
         this.isFloatFormat = false;
         this.strings = strings;
+        this._floatBuffer = null;
     }
 
     async configure(session) {
@@ -48,7 +49,7 @@ export class DepthOcclusionManager {
         }
 
         const depthData = frame.getDepthInformation(pose.views[0]);
-        if (!depthData || !depthData.data) {
+        if (!depthData) {
             return null;
         }
 
@@ -73,9 +74,26 @@ export class DepthOcclusionManager {
         } else if (data instanceof Uint16Array) {
             textureData = new Uint8Array(data.buffer);
             this.isFloatFormat = false;
-        } else {
+        } else if (data && data.buffer) {
             textureData = new Uint8Array(data.buffer);
             this.isFloatFormat = false;
+        } else if (typeof depthData.getDepthInMeters === 'function') {
+            const size = width * height;
+            if (!this._floatBuffer || this._floatBuffer.length !== size) {
+                this._floatBuffer = new Float32Array(size);
+            }
+            for (let y = 0; y < height; y += 1) {
+                for (let x = 0; x < width; x += 1) {
+                    const idx = y * width + x;
+                    this._floatBuffer[idx] = depthData.getDepthInMeters(x, y) || 0;
+                }
+            }
+            textureData = this._floatBuffer;
+            textureFormat = THREE.RedFormat;
+            textureType = THREE.FloatType;
+            this.isFloatFormat = true;
+        } else {
+            return null;
         }
 
         if (this.depthTexture && (this.depthTexture.format !== textureFormat || this.depthTexture.type !== textureType)) {
@@ -83,6 +101,9 @@ export class DepthOcclusionManager {
         }
 
         if (textureNeedsRebuild) {
+            if (this.depthTexture) {
+                this.depthTexture.dispose();
+            }
             this.depthTexture = new THREE.DataTexture(textureData, width, height, textureFormat, textureType);
             this.depthTexture.minFilter = THREE.NearestFilter;
             this.depthTexture.magFilter = THREE.NearestFilter;
@@ -91,7 +112,7 @@ export class DepthOcclusionManager {
             if (textureFormat === THREE.RedFormat && textureType === THREE.FloatType) {
                 this.depthTexture.internalFormat = 'R32F';
             }
-        } else if (textureData !== this.depthTexture.image.data) {
+        } else if (textureData && this.depthTexture.image?.data?.set) {
             this.depthTexture.image.data.set(textureData);
         }
 
