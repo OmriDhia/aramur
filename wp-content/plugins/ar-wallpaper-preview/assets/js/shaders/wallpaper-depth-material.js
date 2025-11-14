@@ -72,9 +72,9 @@ export function createWallpaperMaterial(texture) {
                         realDepth = texture2D(uDepthTexture, depthUv).r * uDepthScale;
                     } else {
                         vec2 depthSample = texture2D(uDepthTexture, depthUv).ra;
-                        float high = depthSample.x * 255.0;
-                        float low = depthSample.y * 255.0;
-                        float depthMm = high + low * 256.0;
+                        float low = depthSample.x * 255.0;
+                        float high = depthSample.y * 255.0;
+                        float depthMm = low + high * 256.0;
                         realDepth = depthMm * uDepthScale;
                     }
                     float virtualDepth = linearizeDepth(gl_FragCoord.z);
