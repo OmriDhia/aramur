@@ -99,11 +99,12 @@ export default async function setupInstance(root){
    const loadingEl = root.querySelector('.arwp-loading');
 
    // create auxiliary canvases
-   const videoCanvas = makeCanvas(2,2);
-   const fgCanvas = makeCanvas(2,2);
-   // segmentation provider will be lazily initialized on start()
-   let segProvider = null;
-   const pendingSegOptions = { quality: DEFAULTS.quality, feather: DEFAULTS.feather, detectionInterval: 400, softFillRadius: DEFAULTS.feather * 6 };
+  const videoCanvas = makeCanvas(2,2);
+  const fgCanvas = makeCanvas(2,2);
+  // segmentation provider will be lazily initialized on start()
+  let segProvider = null;
+  const pendingSegOptions = { quality: DEFAULTS.quality, feather: DEFAULTS.feather, detectionInterval: 400, softFillRadius: DEFAULTS.feather * 6 };
+  let lastMaskImageData = null;
 
    // Diagnostic UI (status + debug toggle)
    let diagRoot = null;
@@ -320,58 +321,64 @@ export default async function setupInstance(root){
      const dt = (now - lastFrameTime) / 1000;
      lastFrameTime = now;
 
-     // update segmentation provider if available
-     if (segProvider && typeof segProvider.update === 'function'){
-       try{ await segProvider.update(video, dt); }catch(e){ console.warn('ARWP: segProvider.update failed', e); }
-     }
+    // Ensure all working canvases match the video dimensions for this frame
+    copySize(video, wallpaperCanvas, maskCanvas, outputCanvas, videoCanvas, fgCanvas);
 
-     // smooth transform towards target
-     smoothTransform = lerpTransform(smoothTransform, targetTransform, transformSmoothFactor);
+    // Request/update segmentation mask
+    let maskImageData = null;
+    if (segProvider && typeof segProvider.getMask === 'function'){
+      try{
+        maskImageData = await segProvider.getMask(video, videoCanvas.width, videoCanvas.height);
+      }catch(e){ console.warn('ARWP: segProvider.getMask failed', e); }
+    }
+    if (!maskImageData && lastMaskImageData){
+      maskImageData = lastMaskImageData;
+    }
 
-     // apply to video canvas (for segmentation)
-     {
-       const ctx = videoCanvas.getContext('2d');
-       ctx.clearRect(0,0,videoCanvas.width,videoCanvas.height);
-       ctx.save();
-       ctx.translate(videoCanvas.width/2, videoCanvas.height/2);
-       ctx.rotate(-smoothTransform.yaw);
-       ctx.translate(-videoCanvas.width/2, -videoCanvas.height/2);
-       ctx.drawImage(video, 0, 0, videoCanvas.width, videoCanvas.height);
-       ctx.restore();
-     }
+    // smooth transform towards target
+    smoothTransform = lerpTransform(smoothTransform, targetTransform, transformSmoothFactor);
 
-     // render wallpaper (scaled to video size)
-     copySize(video, wallpaperCanvas, maskCanvas, outputCanvas, videoCanvas, fgCanvas);
-     drawWallpaperToCanvas(wallpaperImg, wallpaperCanvas);
+    // draw the latest camera frame into an off-screen canvas so we can apply the mask via compositing
+    {
+      const ctx = videoCanvas.getContext('2d');
+      ctx.clearRect(0,0,videoCanvas.width,videoCanvas.height);
+      ctx.save();
+      ctx.translate(videoCanvas.width/2, videoCanvas.height/2);
+      ctx.rotate(-smoothTransform.yaw);
+      ctx.translate(-videoCanvas.width/2, -videoCanvas.height/2);
+      ctx.drawImage(video, 0, 0, videoCanvas.width, videoCanvas.height);
+      ctx.restore();
+    }
 
-    // Composite to output canvas.
+    // redraw wallpaper to match the video canvas
+    drawWallpaperToCanvas(wallpaperImg, wallpaperCanvas);
+
+    // update mask canvas and punch out foreground objects from the wallpaper layer
+    const maskCtx = maskCanvas.getContext('2d');
+    maskCtx.clearRect(0,0,maskCanvas.width, maskCanvas.height);
+    if (maskImageData){
+      if (maskCanvas.width !== maskImageData.width || maskCanvas.height !== maskImageData.height){
+        maskCanvas.width = maskImageData.width;
+        maskCanvas.height = maskImageData.height;
+      }
+      maskCtx.putImageData(maskImageData, 0, 0);
+      lastMaskImageData = maskImageData;
+      const wallCtx = wallpaperCanvas.getContext('2d');
+      wallCtx.save();
+      wallCtx.globalCompositeOperation = 'destination-out';
+      wallCtx.drawImage(maskCanvas, 0, 0, wallpaperCanvas.width, wallpaperCanvas.height);
+      wallCtx.restore();
+    }
+
+    // Composite final output: start with the live video, then overlay the masked wallpaper
     try{
       const outCtx = outputCanvas.getContext('2d');
-      // ensure sizes
-      if (outputCanvas.width !== video.videoWidth || outputCanvas.height !== video.videoHeight){ outputCanvas.width = video.videoWidth; outputCanvas.height = video.videoHeight; }
       outCtx.clearRect(0,0,outputCanvas.width, outputCanvas.height);
-      // draw wallpaper as background (prefer direct image draw; fallback to neutral fill & message)
-      const painted = wallpaperImg ? drawWallpaperToCtx(wallpaperImg, outCtx, outputCanvas.width, outputCanvas.height) : false;
-      if (!painted){ outCtx.fillStyle = '#222'; outCtx.fillRect(0,0,outputCanvas.width, outputCanvas.height); outCtx.fillStyle = '#888'; outCtx.font = '16px sans-serif'; outCtx.fillText('No wallpaper configured', 10, 28); }
-    }catch(e){ console.warn('ARWP: output composite failed', e); }
-
-    // Quick sanity-check: if output is fully black (first pixel is transparent/black), try drawing video element directly.
-    try{
-      const px = outputCanvas.getContext('2d').getImageData(0,0,1,1).data;
-      const isBlack = px[0] === 0 && px[1] === 0 && px[2] === 0 && px[3] === 0;
-      if (isBlack){
-        try{
-          const outCtx2 = outputCanvas.getContext('2d');
-          outCtx2.globalCompositeOperation = 'source-over';
-          outCtx2.clearRect(0,0,outputCanvas.width, outputCanvas.height);
-          // draw wallpaper background (direct image if present) then raw video as last resort
-          const painted2 = wallpaperImg ? drawWallpaperToCtx(wallpaperImg, outCtx2, outputCanvas.width, outputCanvas.height) : false;
-          if (!painted2){ outCtx2.fillStyle = '#222'; outCtx2.fillRect(0,0,outputCanvas.width, outputCanvas.height); }
-          outCtx2.drawImage(video, 0, 0, outputCanvas.width, outputCanvas.height);
-          console.warn('ARWP: output was black; fell back to drawing raw video element');
-        }catch(e){ /* ignore fallback errors */ }
+      outCtx.drawImage(videoCanvas, 0, 0, outputCanvas.width, outputCanvas.height);
+      if (wallpaperImg){
+        outCtx.drawImage(wallpaperCanvas, 0, 0, outputCanvas.width, outputCanvas.height);
       }
-    }catch(e){ /* ignore pixel sampling errors */ }
+    }catch(e){ console.warn('ARWP: output composite failed', e); }
 
      // request next frame
      if (video.readyState >= 2) {
@@ -443,12 +450,13 @@ export default async function setupInstance(root){
 
    // cleanup on dispose
    return ()=>{
-     destroyDiagUI();
-     if (segProvider && typeof segProvider.dispose === 'function') try{ segProvider.dispose(); }catch(e){ console.warn('ARWP: dispose failed', e); }
-     if (video) { video.srcObject = null; video.pause(); }
-     [ wallpaperCanvas, maskCanvas, outputCanvas, videoCanvas, fgCanvas ].forEach(c=>{ try{ c.width = 2; c.height = 2; }catch(e){} });
-   };
- }
+    destroyDiagUI();
+    if (segProvider && typeof segProvider.dispose === 'function') try{ segProvider.dispose(); }catch(e){ console.warn('ARWP: dispose failed', e); }
+    if (video) { video.srcObject = null; video.pause(); }
+    lastMaskImageData = null;
+    [ wallpaperCanvas, maskCanvas, outputCanvas, videoCanvas, fgCanvas ].forEach(c=>{ try{ c.width = 2; c.height = 2; }catch(e){} });
+  };
+}
 
 // Also expose on window for dev tools and to satisfy static analysis that the default export is used
 if (typeof window !== 'undefined') {

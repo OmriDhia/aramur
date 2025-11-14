@@ -38,6 +38,7 @@ export class WebXREngine {
         this.segmentationTexture = new THREE.CanvasTexture(this.segmentationCanvas);
         this.segmentationTexture.minFilter = THREE.LinearFilter;
         this.segmentationTexture.magFilter = THREE.LinearFilter;
+        this.segmentationTexture.flipY = false;
         this.segmentationTexture.needsUpdate = true;
         this.lastSegmentationTime = 0;
         this.planeBasis = null;
@@ -107,33 +108,6 @@ export class WebXREngine {
         this.wallpaperMesh = this.createWallpaperMesh();
         this.wallpaperMesh.visible = false;
         this.scene.add(this.wallpaperMesh);
-    }
-
-    createWallpaperMesh() {
-        const geometry = new THREE.PlaneGeometry(this.wallpaperWidthMeters, this.wallpaperHeightMeters, 1, 1);
-        const textureLoader = new THREE.TextureLoader();
-        const texture = textureLoader.load(this.data.image_url, (tex) => {
-            if (this.data.tiling) {
-                tex.wrapS = THREE.RepeatWrapping;
-                tex.wrapT = THREE.RepeatWrapping;
-                tex.repeat.set(this.data.repeat_x, this.data.repeat_y);
-            }
-            if (tex.image && (tex.image.width > this.data.max_texture_resolution || tex.image.height > this.data.max_texture_resolution)) {
-                console.warn('Wallpaper texture exceeds configured max resolution.');
-            }
-        });
-
-        const material = new THREE.MeshStandardMaterial({
-            map: texture,
-            side: THREE.DoubleSide,
-            roughness: 0.82,
-            metalness: 0,
-            transparent: true,
-            alphaMap: this.depthTexture,
-            alphaTest: 0.45,
-        });
-
-        return new THREE.Mesh(geometry, material);
     }
 
     setupRenderer() {
@@ -259,6 +233,7 @@ export class WebXREngine {
         const material = createWallpaperMaterial(texture);
         material.uniforms.uBrightness.value = this.data.brightness || 1;
         material.uniforms.uAlpha.value = 0.35;
+        material.uniforms.uSegmentationTexture.value = this.segmentationTexture;
 
         const mesh = new THREE.Mesh(geometry, material);
         mesh.frustumCulled = false;
@@ -370,13 +345,15 @@ export class WebXREngine {
         }
     }
 
-    animate() {
-        this.renderer.setAnimationLoop(this.render.bind(this));
-    }
-
     render(timestamp, frame) {
         const session = this.renderer.xr.getSession();
         if (!frame || !session) {
+            if (this.wallpaperMesh?.material?.uniforms) {
+                const uniforms = this.wallpaperMesh.material.uniforms;
+                uniforms.uCameraNear.value = this.camera.near;
+                uniforms.uCameraFar.value = this.camera.far;
+                uniforms.uResolution.value.set(this.renderer.domElement.width, this.renderer.domElement.height);
+            }
             this.renderer.render(this.scene, this.camera);
             return;
         }
@@ -385,6 +362,13 @@ export class WebXREngine {
 
         if (this.hitTestSource && !this.isConfirmed) {
             this.handleHitTest(frame, referenceSpace);
+        }
+
+        if (this.wallpaperMesh?.material?.uniforms) {
+            const uniforms = this.wallpaperMesh.material.uniforms;
+            uniforms.uCameraNear.value = this.camera.near;
+            uniforms.uCameraFar.value = this.camera.far;
+            uniforms.uResolution.value.set(this.renderer.domElement.width, this.renderer.domElement.height);
         }
 
         this.updateDepth(frame, referenceSpace);
@@ -559,16 +543,21 @@ export class WebXREngine {
             return;
         }
         const depth = this.depthManager.update(frame, referenceSpace);
+        const uniforms = this.wallpaperMesh.material.uniforms;
         if (!depth) {
-this.wallpaperMesh.material.uniforms.uDepthEnabled.value = 0;
-		        this.wallpaperMesh.material.uniforms.uSegmentationEnabled.value = 0;
+            uniforms.uDepthEnabled.value = 0;
+            uniforms.uDepthTexture.value = null;
+            uniforms.uDepthResolution.value.set(0, 0);
+            if (!this.segmentation) {
+                uniforms.uSegmentationEnabled.value = 0;
+            }
             return;
         }
-this.wallpaperMesh.material.uniforms.uDepthTexture.value = depth.texture;
-		        this.wallpaperMesh.material.uniforms.uDepthScale.value = depth.meterScale;
-		        this.wallpaperMesh.material.uniforms.uDepthIsFloat.value = depth.isFloat ? 1 : 0;
-		        this.wallpaperMesh.material.uniforms.uResolution.value.set(depth.width, depth.height);
-		        this.wallpaperMesh.material.uniforms.uDepthEnabled.value = 1;
+        uniforms.uDepthTexture.value = depth.texture;
+        uniforms.uDepthScale.value = depth.meterScale;
+        uniforms.uDepthIsFloat.value = depth.isFloat ? 1 : 0;
+        uniforms.uDepthResolution.value.set(depth.width, depth.height);
+        uniforms.uDepthEnabled.value = 1;
         this.onStatus({ id: 'occlusion', label: this.data.i18n.status_depth, state: 'success' });
     }
 

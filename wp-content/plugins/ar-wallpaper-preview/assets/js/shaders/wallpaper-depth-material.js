@@ -11,6 +11,7 @@ export function createWallpaperMaterial(texture) {
             uDepthScale: { value: 0.001 },
             uDepthIsFloat: { value: 0 },
             uResolution: { value: new THREE.Vector2(1, 1) },
+            uDepthResolution: { value: new THREE.Vector2(1, 1) },
             uCameraNear: { value: 0.01 },
             uCameraFar: { value: 20.0 },
             uBrightness: { value: 1.0 },
@@ -34,10 +35,12 @@ export function createWallpaperMaterial(texture) {
             uniform int uSegmentationEnabled;
             uniform int uDepthIsFloat;
             uniform vec2 uResolution;
+            uniform vec2 uDepthResolution;
             uniform float uDepthScale;
             uniform float uCameraNear;
             uniform float uCameraFar;
             uniform float uBrightness;
+            uniform float uAlpha;
 
             float linearizeDepth(float depth) {
                 float z = depth * 2.0 - 1.0;
@@ -50,18 +53,18 @@ export function createWallpaperMaterial(texture) {
                 base.rgb *= uBrightness;
                 base.a *= uAlpha;
 
-                vec2 depthUv = gl_FragCoord.xy / uResolution;
+                vec2 screenUv = gl_FragCoord.xy / uResolution;
+                vec2 depthUv = screenUv;
+                if (uDepthResolution.x > 0.0 && uDepthResolution.y > 0.0) {
+                    depthUv = vec2(gl_FragCoord.x / uDepthResolution.x, gl_FragCoord.y / uDepthResolution.y);
+                }
 
-if (uSegmentationEnabled == 1) {
-	                    // Segmentation mask is typically a single channel (red or alpha) where a high value
-	                    // indicates the foreground object (e.g., a person).
-	                    // We use the alpha channel here as it was used in the original code.
-	                    float mask = texture2D(uSegmentationTexture, depthUv).a;
-	                    // If the mask value is high (i.e., it's a person/foreground object), discard the wallpaper fragment.
-	                    if (mask > 0.45) {
-	                        discard;
-	                    }
-	                }
+                if (uSegmentationEnabled == 1) {
+                    float mask = texture2D(uSegmentationTexture, screenUv).a;
+                    if (mask > 0.45) {
+                        discard;
+                    }
+                }
 
                 if (uDepthEnabled == 1) {
                     float realDepth;
@@ -69,24 +72,15 @@ if (uSegmentationEnabled == 1) {
                         realDepth = texture2D(uDepthTexture, depthUv).r * uDepthScale;
                     } else {
                         vec2 depthSample = texture2D(uDepthTexture, depthUv).ra;
-                        float high = depthSample.x * 255.0;
-                        float low = depthSample.y * 255.0;
-                        float depthMm = high + low * 256.0;
+                        float low = depthSample.x * 255.0;
+                        float high = depthSample.y * 255.0;
+                        float depthMm = low + high * 256.0;
                         realDepth = depthMm * uDepthScale;
                     }
-// The virtual depth of the wallpaper plane at this fragment
-	                    // is the distance from the camera to the fragment's position in the world.
-	                    // Since the wallpaper is a flat plane, we can use the fragment's z-depth (gl_FragCoord.z)
-	                    // and linearize it to get the distance in meters.
-	                    float virtualDepth = linearizeDepth(gl_FragCoord.z);
-	
-	                    // We want to discard the fragment (i.e., hide the wallpaper) if the real-world depth
-	                    // is less than the virtual depth of the wallpaper. This means a real object is
-	                    // in front of the wallpaper.
-	                    // We also check realDepth > 0.0 to ignore invalid depth data (e.g., far away or unknown).
-	                    if (realDepth > 0.0 && realDepth < virtualDepth) {
-	                        discard;
-	                    }
+                    float virtualDepth = linearizeDepth(gl_FragCoord.z);
+                    if (realDepth > 0.0 && realDepth < virtualDepth) {
+                        discard;
+                    }
                 }
 
                 gl_FragColor = base;
