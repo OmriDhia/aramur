@@ -49,7 +49,12 @@ export class WebXREngine {
         this.autoWallFit = data.auto_wall_fit !== false;
         this.lastHitMatrix = null;
         this.performanceMode = data.performance_mode || 'balanced';
-        this.segmentationInterval = this.performanceMode === 'battery' ? 50 : (this.performanceMode === 'quality' ? 16 : 33);
+        const segmentationIntervals = {
+            quality: 33,
+            balanced: 66,
+            battery: 120,
+        };
+        this.segmentationInterval = segmentationIntervals[this.performanceMode] || segmentationIntervals.balanced;
 
 
         this.init();
@@ -577,19 +582,34 @@ this.wallpaperMesh.material.uniforms.uDepthTexture.value = depth.texture;
         this.lastSegmentationTime = timestamp;
         const width = this.renderer.domElement.width;
         const height = this.renderer.domElement.height;
-        const mask = await this.segmentation.estimate(
-            this.segmentationVideo,
-            width,
-            height,
-            this.segmentationCanvas,
-            this.segmentationCtx,
-        );
-        if (mask) {
+        let mask = null;
+        try {
+            mask = await this.segmentation.estimate(
+                this.segmentationVideo,
+                width,
+                height,
+                this.segmentationCanvas,
+                this.segmentationCtx,
+            );
+        } catch (error) {
+            console.warn('AR Wallpaper Preview: segmentation estimate failed', error);
+        }
+
+        const uniforms = this.wallpaperMesh?.material?.uniforms;
+        if (!uniforms?.uSegmentationEnabled || !uniforms?.uSegmentationTexture) {
+            return;
+        }
+
+        const depthEnabled = Boolean(uniforms.uDepthEnabled?.value);
+        const hasMask = Boolean(mask);
+
+        if (hasMask) {
             this.segmentationTexture.image = mask;
             this.segmentationTexture.needsUpdate = true;
-this.wallpaperMesh.material.uniforms.uSegmentationTexture.value = this.segmentationTexture;
-		        this.wallpaperMesh.material.uniforms.uSegmentationEnabled.value = this.wallpaperMesh.material.uniforms.uDepthEnabled.value ? 0 : 1;
+            uniforms.uSegmentationTexture.value = this.segmentationTexture;
         }
+
+        uniforms.uSegmentationEnabled.value = depthEnabled ? 0 : hasMask ? 1 : 0;
     }
 
     updateLightEstimation(frame) {
